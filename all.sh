@@ -33,6 +33,57 @@ fin_msg(){
     echo -e "${GREEN}#################################${NC}\n"
 }
 
+# ---------------------------------------------------------------------------
+# Resilient / idempotent install helpers: make re-runs fast and stop one bad
+# package/download from silently sinking a whole batch.
+# ---------------------------------------------------------------------------
+APT_FAILED=()   # apt packages that failed, reported at the end
+
+# Install apt packages ONE AT A TIME so a single failure is logged and skipped
+# instead of aborting the whole 'apt install a b c' transaction. Already-present
+# packages are detected with dpkg and skipped without hitting the network.
+apt_install() {
+    local pkg
+    for pkg in "$@"; do
+        if dpkg -s "$pkg" &>/dev/null; then
+            print_success "$pkg already installed"
+        elif sudo apt install -y "$pkg"; then
+            print_success "$pkg installed"
+        else
+            print_warning "$pkg FAILED to install"
+            APT_FAILED+=("$pkg")
+        fi
+    done
+}
+
+# Idempotent pip install: skip entirely if the module already imports, so re-runs
+# and cross-script duplicates don't re-resolve/re-download. $1=import name, rest=pip specs.
+pip_ensure() {
+    local mod=$1; shift
+    if python3 -c "import $mod" &>/dev/null; then
+        print_success "python: $mod already present (skip)"
+    elif pip install "$@" --break-system-packages; then
+        print_success "python: $mod installed"
+    else
+        print_warning "python: $mod FAILED to install"
+    fi
+}
+
+# Idempotent download with retries: skip if the destination already exists.
+# $1=url  $2=dest path  $3=optional 'sudo' to write privileged paths.
+fetch() {
+    local url=$1 dest=$2 pre=${3:-}
+    if [ -s "$dest" ]; then
+        print_success "$(basename "$dest") already present (skip)"
+        return 0
+    fi
+    if $pre curl -fSL --retry 3 --connect-timeout 15 "$url" -o "$dest"; then
+        return 0
+    fi
+    print_warning "download failed: $(basename "$dest")"
+    return 1
+}
+
 echo -e "${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
 echo "║     PSUT VAPT Team - Full Tool Installation           ║"
@@ -89,80 +140,22 @@ else
     exit 1
 fi
 
-print_status "Installing APT packages (this will take several minutes)..."
-if sudo apt install -y \
-    apt-transport-https \
-    libssl-dev \
-    mc \
-    seclists \
-    curl \
-    golang \
-    gobuster \
-    nbtscan \
-    onesixtyone \
-    oscanner \
-    smbclient \
-    smbmap \
-    smtp-user-enum \
-    snmp \
-    sslscan \
-    sipvicious \
-    tnscmd10g \
-    whatweb \
-    wkhtmltopdf \
-    hashcat \
-    feroxbuster \
-    dnsrecon \
-    redis-tools \
-    git \
-    wget \
-    aircrack-ng \
-    set \
-    sqlmap \
-    hydra \
-    docker.io \
-    openjdk-11-jdk \
-    john \
-    awscli \
-    sshuttle \
-    ffuf \
-    burpsuite \
-    python3.13-venv \
-    nuclei \
-    dirsearch \
-    flameshot \
-    scrot \
-    maim \
-    cyberchef \
-    enum4linux \
-    nikto \
-    wfuzz \
-    steghide \
-    binwalk \
-    exiftool \
-    netcat-traditional \
-    socat \
-    proxychains4 \
-    masscan \
-    metasploit-framework \
-    responder \
-    crackmapexec \
-    zaproxy \
-    wireshark \
-    tcpdump \
-    tmux \
-    screen \
-    remmina \
-    terminator; then
-    print_success "APT packages installed successfully"
-else
-    print_warning "Some APT packages may have failed (continuing...)"
-fi
+print_status "Installing APT packages one-by-one (this will take several minutes)..."
+apt_install \
+    apt-transport-https libssl-dev mc seclists curl golang gobuster nbtscan \
+    onesixtyone oscanner smbclient smbmap smtp-user-enum snmp sslscan sipvicious \
+    tnscmd10g whatweb wkhtmltopdf hashcat feroxbuster dnsrecon redis-tools git \
+    wget aircrack-ng set sqlmap hydra docker.io openjdk-11-jdk john awscli \
+    sshuttle ffuf burpsuite python3.13-venv nuclei dirsearch flameshot scrot \
+    maim cyberchef enum4linux nikto wfuzz steghide binwalk exiftool \
+    netcat-traditional socat proxychains4 masscan metasploit-framework responder \
+    crackmapexec zaproxy wireshark tcpdump tmux screen remmina terminator
 
 print_status "Installing docker-compose..."
-if sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose && sudo chmod +x /usr/local/bin/docker-compose; then
-    docker_compose_version=$(docker-compose --version 2>&1)
-    print_success "docker-compose installed: $docker_compose_version"
+if command -v docker-compose &>/dev/null; then
+    print_success "docker-compose already installed: $(docker-compose --version 2>&1)"
+elif sudo curl -fSL --retry 3 --connect-timeout 15 "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose && sudo chmod +x /usr/local/bin/docker-compose; then
+    print_success "docker-compose installed: $(docker-compose --version 2>&1)"
 else
     print_warning "docker-compose installation failed (non-critical)"
 fi
@@ -200,62 +193,55 @@ mkdir -p ~/dropzone/privesc
 cd ~/dropzone
 
 print_status "Downloading privilege escalation scripts..."
-if curl -L https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh -o ~/dropzone/privesc/linpeas.sh && \
-   curl -L https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/Privesc/PowerUp.ps1 -o ~/dropzone/privesc/PowerUp.ps1 && \
-   curl -L https://github.com/peass-ng/PEASS-ng/releases/download/20241011-2e37ba11/winPEASx64.exe -o ~/dropzone/privesc/winpeas.exe && \
-   curl -L https://raw.githubusercontent.com/enjoiz/Privesc/refs/heads/master/privesc.ps1 -o ~/dropzone/privesc/privesc.ps1 && \
-   curl -L https://raw.githubusercontent.com/itm4n/PrivescCheck/refs/heads/master/PrivescCheck.ps1 -o ~/dropzone/privesc/PrivescCheck.ps1; then
-    chmod +x ~/dropzone/privesc/linpeas.sh 2>/dev/null
-    print_success "Privilege escalation scripts downloaded"
-    fin_msg 'Privesc Scripts'
-else
-    print_warning "Some privilege escalation scripts failed to download"
-fi
+fetch https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh ~/dropzone/privesc/linpeas.sh
+fetch https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/Privesc/PowerUp.ps1 ~/dropzone/privesc/PowerUp.ps1
+fetch https://github.com/peass-ng/PEASS-ng/releases/download/20241011-2e37ba11/winPEASx64.exe ~/dropzone/privesc/winpeas.exe
+fetch https://raw.githubusercontent.com/enjoiz/Privesc/refs/heads/master/privesc.ps1 ~/dropzone/privesc/privesc.ps1
+fetch https://raw.githubusercontent.com/itm4n/PrivescCheck/refs/heads/master/PrivescCheck.ps1 ~/dropzone/privesc/PrivescCheck.ps1
+chmod +x ~/dropzone/privesc/linpeas.sh 2>/dev/null
+fin_msg 'Privesc Scripts'
 
 print_status "Downloading pspy64..."
-if wget -q https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64 -O ~/dropzone/pspy64 && chmod +x ~/dropzone/pspy64; then
-    print_success "pspy64 downloaded"
+if fetch https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64 ~/dropzone/pspy64; then
+    chmod +x ~/dropzone/pspy64
     fin_msg 'pspy64'
-else
-    print_warning "pspy64 download failed"
 fi
 
 print_status "Downloading username-anarchy..."
-if wget -q https://raw.githubusercontent.com/urbanadventurer/username-anarchy/refs/heads/master/username-anarchy -O ~/dropzone/username-anarchy && chmod +x ~/dropzone/username-anarchy; then
-    print_success "username-anarchy downloaded"
-else
-    print_warning "username-anarchy download failed"
+if fetch https://raw.githubusercontent.com/urbanadventurer/username-anarchy/refs/heads/master/username-anarchy ~/dropzone/username-anarchy; then
+    chmod +x ~/dropzone/username-anarchy
 fi
 
 print_status "Downloading upshell (TTY upgrade helper)..."
-if curl -L https://raw.githubusercontent.com/brightio/penelope/refs/heads/main/extras/tty_upgrade.sh -o ~/dropzone/upshell && sudo cp ~/dropzone/upshell /usr/local/bin/upshell && sudo chmod +x /usr/local/bin/upshell; then
+if [ -f /usr/local/bin/upshell ]; then
+    print_success "upshell already installed (skip)"
+elif fetch https://raw.githubusercontent.com/brightio/penelope/refs/heads/main/extras/tty_upgrade.sh ~/dropzone/upshell; then
+    sudo cp ~/dropzone/upshell /usr/local/bin/upshell && sudo chmod +x /usr/local/bin/upshell
     print_success "upshell installed to /usr/local/bin/upshell"
     fin_msg 'upshell'
-else
-    print_warning "upshell installation failed"
 fi
 
 print_status "Downloading chisel..."
-if wget -q https://github.com/jpillora/chisel/releases/download/v1.10.1/chisel_1.10.1_linux_amd64.tar.gz -O chisel.tar.gz && \
-   tar -xzf chisel.tar.gz && \
-   chmod +x chisel && \
-   sudo mv chisel /usr/local/bin/chisel; then
-    chisel_version=$(chisel --version 2>&1)
-    print_success "chisel installed: $chisel_version"
+if command -v chisel &>/dev/null; then
+    print_success "chisel already installed: $(chisel --version 2>&1)"
+elif wget -q --tries=3 --timeout=30 https://github.com/jpillora/chisel/releases/download/v1.10.1/chisel_1.10.1_linux_amd64.tar.gz -O chisel.tar.gz && \
+     tar -xzf chisel.tar.gz && chmod +x chisel && sudo mv chisel /usr/local/bin/chisel; then
+    print_success "chisel installed: $(chisel --version 2>&1)"
     rm -f chisel.tar.gz
     fin_msg 'chisel'
 else
     print_warning "chisel installation failed"
+    rm -f chisel.tar.gz
 fi
 
 
 print_status "Installing AWS/Cloud Python packages..."
-if pip install pacu scoutsuite principalmapper minikerberos pypykatz --break-system-packages; then
-    print_success "AWS/Cloud security tools installed"
-    fin_msg 'Cloud Security Tools'
-else
-    print_warning "Some AWS/Cloud tools failed to install"
-fi
+pip_ensure pacu pacu
+pip_ensure ScoutSuite scoutsuite
+pip_ensure principalmapper principalmapper
+pip_ensure minikerberos minikerberos
+pip_ensure pypykatz pypykatz
+fin_msg 'Cloud Security Tools'
 
 print_status "Setting up wordlists..."
 if [ ! -d "/usr/share/wordlists/kali-wordlists" ]; then
@@ -308,32 +294,36 @@ fi
 
 print_status "Cloning SSTImap"
 cd ~/dropzone
-if git clone https://github.com/vladko312/SSTImap.git; then
-    print_success "SSTImap cloned"
-else 
-    print_warning "SSTImap clone failed"
-fi 
+if [ ! -d "SSTImap" ]; then
+    if git clone https://github.com/vladko312/SSTImap.git; then
+        print_success "SSTImap cloned"
+    else
+        print_warning "SSTImap clone failed"
+    fi
+else
+    print_success "SSTImap already exists"
+fi
 
 
 print_status "Installing additional useful Go tools..."
 export GOPATH=$HOME/go
 export PATH=$PATH:$GOPATH/bin
 
-if go install github.com/tomnomnom/httprobe@latest 2>/dev/null; then
-    print_success "httprobe installed"
-fi
-
-if go install github.com/tomnomnom/waybackurls@latest 2>/dev/null; then
-    print_success "waybackurls installed"
-fi
-
-if go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 2>/dev/null; then
-    print_success "subfinder installed"
-fi
-
-if go install github.com/projectdiscovery/httpx/cmd/httpx@latest 2>/dev/null; then
-    print_success "httpx installed"
-fi
+# go install COMPILES from source each time - skip if the binary already exists so
+# re-runs don't recompile (the single biggest time sink on a re-run).
+go_install() {   # $1=binary name  $2=module path
+    if command -v "$1" &>/dev/null || [ -x "$GOPATH/bin/$1" ]; then
+        print_success "$1 already installed (skip)"
+    elif go install "$2" 2>/dev/null; then
+        print_success "$1 installed"
+    else
+        print_warning "$1 install failed"
+    fi
+}
+go_install httprobe    github.com/tomnomnom/httprobe@latest
+go_install waybackurls github.com/tomnomnom/waybackurls@latest
+go_install subfinder   github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go_install httpx       github.com/projectdiscovery/httpx/cmd/httpx@latest
 
 print_status "Verifying screenshot tools..."
 if command -v flameshot &> /dev/null; then
@@ -406,9 +396,9 @@ check_file() {
 
 print_status "Checking core scanning tools..."
 check_tool "nmap"
-check_tool "masscan"
+check_tool "masscan" "command -v masscan"
 check_tool "gobuster"
-check_tool "ffuf"
+check_tool "ffuf" "ffuf -V"
 check_tool "feroxbuster"
 
 print_status "Checking web tools..."
@@ -419,12 +409,12 @@ check_tool "whatweb"
 
 print_status "Checking network tools..."
 check_tool "chisel"
-check_tool "socat"
-check_tool "proxychains4" "proxychains4 -h"
+check_tool "socat" "socat -V"
+check_tool "proxychains4" "command -v proxychains4"
 
 print_status "Checking password tools..."
-check_tool "hydra"
-check_tool "john"
+check_tool "hydra" "command -v hydra"
+check_tool "john" "command -v john"
 check_tool "hashcat"
 
 print_status "Checking screenshot tools..."
@@ -456,6 +446,12 @@ if [ $FAIL -eq 0 ]; then
     print_success "All critical tools verified!"
 else
     print_warning "$FAIL tools failed verification - check log file"
+fi
+
+if [ ${#APT_FAILED[@]} -gt 0 ]; then
+    echo ""
+    print_warning "APT packages that FAILED to install: ${APT_FAILED[*]}"
+    print_warning "  Retry manually: sudo apt install ${APT_FAILED[*]}"
 fi
 
 echo ""

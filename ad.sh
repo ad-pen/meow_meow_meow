@@ -33,6 +33,43 @@ fin_msg(){
     echo -e "${GREEN}#################################${NC}\n"
 }
 
+# ---------------------------------------------------------------------------
+# Resilient / idempotent install helpers: make re-runs fast and stop one bad
+# package from silently sinking a whole batch.
+# ---------------------------------------------------------------------------
+APT_FAILED=()   # apt packages that failed, reported at the end
+
+# Install apt packages ONE AT A TIME so a single failure is logged and skipped
+# instead of aborting the whole 'apt install a b c' transaction. Already-present
+# packages are detected with dpkg and skipped without hitting the network.
+apt_install() {
+    local pkg
+    for pkg in "$@"; do
+        if dpkg -s "$pkg" &>/dev/null; then
+            print_success "$pkg already installed"
+        elif sudo apt install -y "$pkg"; then
+            print_success "$pkg installed"
+        else
+            print_warning "$pkg FAILED to install"
+            APT_FAILED+=("$pkg")
+        fi
+    done
+}
+
+# Idempotent pip install: skip entirely if the module already imports, so re-runs
+# and cross-script duplicates (minikerberos/pypykatz already come from all.sh)
+# don't re-resolve/re-download. $1=import name, rest=pip specs.
+pip_ensure() {
+    local mod=$1; shift
+    if python3 -c "import $mod" &>/dev/null; then
+        print_success "python: $mod already present (skip)"
+    elif pip install "$@" --break-system-packages; then
+        print_success "python: $mod installed"
+    else
+        print_warning "python: $mod FAILED to install"
+    fi
+}
+
 echo -e "${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
 echo "║     PSUT VAPT Team - AD Tools Installation            ║"
@@ -54,21 +91,23 @@ mkdir -p /home/kali/dropzone
 cd /home/kali/dropzone
 print_success "Dropzone ready at ~/dropzone"
 
-print_status "Installing AD enumeration and attack tools..."
-if sudo apt install -y \
-    enum4linux \
-    impacket-scripts \
-    bloodhound.py \
-    docker.io \
-    bloodhound \
-    neo4j \
-    certipy-ad \
-    evil-winrm \
-    responder; then
-    print_success "AD tools installed via APT"
-else
-    print_warning "Some APT packages may have failed"
-fi
+# Run apt non-interactively. Without this, debconf's pre-configuration step
+# (dpkg-preconfigure) tries an interactive frontend; because this script pipes all
+# output through tee (no usable tty), that step ERRORS and apt aborts the whole
+# install line - which is exactly why neo4j + bloodhound silently failed to install
+# while already-present tools still "verified". all.sh already does this; ad.sh didn't.
+export DEBIAN_FRONTEND=noninteractive
+print_status "Removing needrestart to avoid interactive prompts..."
+sudo apt remove needrestart -y 2>/dev/null || print_warning "needrestart not installed (ok)"
+
+print_status "Installing AD enumeration and attack tools (one-by-one)..."
+# netexec is added here so nxc comes from Kali's package (with packaged deps) rather
+# than a flaky pip build of aardwolf. build-essential/python3-dev/libffi-dev let any
+# remaining pip source builds (e.g. aardwolf) compile instead of failing on a wheel.
+apt_install \
+    enum4linux impacket-scripts bloodhound.py docker.io bloodhound neo4j \
+    certipy-ad evil-winrm responder netexec \
+    build-essential python3-dev libffi-dev
 
 # Team-wide Neo4j/BloodHound password so every AD box is identical. Change here if
 # you want a different one; it must be >= 8 chars for Neo4j to accept it.
@@ -150,33 +189,33 @@ else
     print_success "SharpEfsPotato already exists"
 fi
 
-print_status "Installing NetExec (NXC)..."
-if command -v pipx &> /dev/null; then
-    if pipx install git+https://github.com/Pennyw0rth/NetExec 2>&1 | grep -q "installed package"; then
-        print_success "NetExec installed via pipx"
-        fin_msg 'NetExec (NXC)'
-    else
-        print_warning "NetExec may already be installed or installation failed"
-    fi
+print_status "Installing NetExec (nxc)..."
+if command -v nxc &> /dev/null || command -v netexec &> /dev/null; then
+    # Provided by the apt 'netexec' package above (packaged deps, no aardwolf build).
+    print_success "NetExec present: $(nxc --version 2>&1 | head -n1 || echo installed)"
+    fin_msg 'NetExec (nxc)'
 else
-    print_warning "pipx not found, installing it first..."
-    pip install --user pipx --break-system-packages
-    python3 -m pipx ensurepath
-    pipx install git+https://github.com/Pennyw0rth/NetExec
-    print_success "NetExec installed"
-    fin_msg 'NetExec (NXC)'
+    print_warning "apt netexec unavailable - falling back to pipx build..."
+    if ! command -v pipx &> /dev/null; then
+        pip install --user pipx --break-system-packages
+        python3 -m pipx ensurepath
+    fi
+    if pipx install git+https://github.com/Pennyw0rth/NetExec; then
+        print_success "NetExec installed via pipx"
+        fin_msg 'NetExec (nxc)'
+    else
+        print_warning "NetExec install failed - check build-essential/python3-dev are present"
+    fi
 fi
 
-print_status "Installing Certipy-AD..."
-if [ ! -d "Certipy" ]; then
-    git clone https://github.com/ly4k/Certipy
-fi
-if pip install certipy-ad --break-system-packages; then
-    certipy_version=$(certipy --version 2>&1 || echo "installed")
-    print_success "Certipy-AD installed: $certipy_version"
+print_status "Verifying Certipy (installed via apt 'certipy-ad' above)..."
+# Dedup: previously installed 3 ways (apt + git clone + pip). Keep only the apt
+# package; just confirm the command is present here.
+if command -v certipy-ad &> /dev/null || command -v certipy &> /dev/null; then
+    print_success "Certipy present: $(certipy-ad --version 2>&1 | head -n1 || certipy --version 2>&1 | head -n1 || echo installed)"
     fin_msg 'Certipy'
 else
-    print_warning "Certipy-AD installation failed"
+    print_warning "certipy not found - apt 'certipy-ad' may have failed; see APT summary at end"
 fi
 
 print_status "Installing PKINITtools..."
@@ -189,12 +228,8 @@ if [ ! -d "PKINITtools" ]; then
 else
     print_success "PKINITtools already exists"
 fi
-if pip install minikerberos --break-system-packages; then
-    print_success "minikerberos (for PKINITtools) installed"
-    fin_msg 'PKINITtools'
-else
-    print_warning "minikerberos installation failed"
-fi
+pip_ensure minikerberos minikerberos   # usually already present from all.sh; skipped if so
+fin_msg 'PKINITtools'
 
 print_status "Installing bloodyAD..."
 if [ ! -d "bloodyAD" ]; then
@@ -234,16 +269,13 @@ else
     print_warning "windapsearch installation failed"
 fi
 
-print_status "Installing Impacket via pipx..."
-if ! command -v pipx &> /dev/null; then
-    pip install --user pipx --break-system-packages
-    python3 -m pipx ensurepath
-fi
-if python3 -m pipx install impacket; then
-    print_success "Impacket installed via pipx"
+print_status "Verifying Impacket (installed via apt 'impacket-scripts' above)..."
+# Dedup: was installed via both apt AND pipx. Keep the apt package; confirm here.
+if command -v impacket-secretsdump &> /dev/null || python3 -c "import impacket" &> /dev/null; then
+    print_success "Impacket present"
     fin_msg 'Impacket'
 else
-    print_warning "Impacket installation may have failed (might already be installed)"
+    print_warning "Impacket not found - apt 'impacket-scripts' may have failed; see APT summary at end"
 fi
 
 # print_status "Installing Sliver C2 Framework..."
@@ -271,11 +303,11 @@ fi
 # fi
 
 print_status "Installing additional AD Python tools..."
-if pip install pypykatz aardwolf --break-system-packages; then
-    print_success "pypykatz and aardwolf installed"
-else
-    print_warning "Some Python AD tools failed to install"
-fi
+pip_ensure pypykatz pypykatz     # usually already from all.sh; skipped if present
+# aardwolf has C/build deps - build-essential/python3-dev/libffi-dev were installed
+# above so the wheel builds instead of failing. nxc no longer depends on this pip
+# build (it comes from the apt 'netexec' package), so a failure here is non-fatal.
+pip_ensure aardwolf aardwolf
 
 echo -e "\n${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
@@ -345,6 +377,12 @@ if [ $AD_FAIL -eq 0 ]; then
     print_success "All AD tools verified successfully!"
 else
     print_warning "$AD_FAIL AD tools failed verification - check log file"
+fi
+
+if [ ${#APT_FAILED[@]} -gt 0 ]; then
+    echo ""
+    print_warning "APT packages that FAILED to install: ${APT_FAILED[*]}"
+    print_warning "  Retry manually: sudo apt install ${APT_FAILED[*]}"
 fi
 
 echo ""
