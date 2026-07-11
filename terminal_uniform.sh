@@ -15,10 +15,16 @@
 #
 # Usage:  bash terminal_uniform.sh
 #
-# IMPORTANT: qterminal rewrites its config file when it exits, so an OPEN qterminal
-# will overwrite these edits on close. Run this with qterminal fully closed (from a
-# TTY / SSH), or log out and back in afterwards. xfce4-terminal does NOT save on
-# exit, but only NEW windows pick up the change. The script warns if either is open.
+# IMPORTANT: qterminal rewrites its ENTIRE config file to its in-memory settings
+# every time it exits. So any qterminal that was already open when we applied the
+# uniform (e.g. the one you ran this from) will overwrite our edits back to its
+# defaults on close - and logging out clobbers it for exactly this reason.
+# To make the uniform stick regardless, we set qterminal.ini immutable (chattr +i)
+# after writing it, so qterminal's on-exit save silently fails and our config stays.
+# This needs root (start.sh already primes sudo); it degrades to a warning otherwise.
+# To change qterminal settings later:  sudo chattr -i ~/.config/qterminal.org/qterminal.ini
+# xfce4-terminal does NOT rewrite on exit, so it needs no lock - only NEW windows
+# pick up the change.
 
 # green-on-black, chosen to approximate qterminal's GreenOnBlack scheme. Both
 # emulators use these same two values, so tune here for an exact pixel match.
@@ -61,12 +67,26 @@ apply_uniform() {
 }
 
 # --- qterminal ([General] section, its own key names / value encodings) ---
+# Unlock first so a previous run's immutable bit doesn't block our edits (no-op if
+# not set / not root).
+sudo chattr -i "$QT_INI" 2>/dev/null
+
 apply_uniform "$QT_INI" General \
     "colorScheme=GreenOnBlack" \
     "TerminalTransparency=0" \
     "TerminalBackgroundMode=0" \
     "fontFamily=FiraCode" \
     "fontSize=10"
+
+# Lock it so no open/closing qterminal can overwrite it on exit (see header).
+if sudo chattr +i "$QT_INI" 2>/dev/null; then
+    echo "[+] Locked $QT_INI (immutable) - qterminal can no longer revert it."
+    echo "    To edit qterminal settings later:  sudo chattr -i \"$QT_INI\""
+else
+    echo "[!] Could NOT lock $QT_INI (need root, or filesystem lacks chattr support)."
+    echo "    Without the lock, apply this with ALL qterminal windows closed (from a"
+    echo "    TTY/SSH) or an open qterminal will overwrite it again on exit."
+fi
 
 echo
 
@@ -83,11 +103,10 @@ pgrep -x qterminal      >/dev/null 2>&1 && running+=("qterminal")
 pgrep -x xfce4-terminal >/dev/null 2>&1 && running+=("xfce4-terminal")
 if [ ${#running[@]} -gt 0 ]; then
     echo
-    echo "[!] Currently running: ${running[*]}"
-    echo "    - qterminal rewrites its config on exit and would UNDO these changes."
-    echo "    - xfce4-terminal keeps this config but only NEW windows use it."
-    echo "    To make the uniform stick: close all terminal windows (or log out/in),"
-    echo "    re-run this from a TTY/SSH if needed, then open fresh terminals."
+    echo "[!] Currently open: ${running[*]}"
+    echo "    These windows still show the OLD look until you close them - just open a"
+    echo "    NEW terminal to see the uniform. If qterminal.ini was locked above, those"
+    echo "    open windows can no longer revert it on exit."
 else
     echo
     echo "[*] Open a new terminal (qterminal or xfce4-terminal) to see the uniform."

@@ -70,12 +70,42 @@ else
     print_warning "Some APT packages may have failed"
 fi
 
+# Team-wide Neo4j/BloodHound password so every AD box is identical. Change here if
+# you want a different one; it must be >= 8 chars for Neo4j to accept it.
+NEO4J_PASS="cptc12bloodhound"
+
 print_status "Configuring Neo4j for remote access..."
 if [ -f "/etc/neo4j/neo4j.conf" ]; then
     sudo sed -i 's/#dbms.default_listen_address=0.0.0.0/dbms.default_listen_address=0.0.0.0/' /etc/neo4j/neo4j.conf
     print_success "Neo4j configured for remote access"
 else
-    print_warning "Neo4j config file not found, skipping configuration"
+    print_warning "Neo4j config file not found, skipping listen-address configuration"
+fi
+
+# Set the initial password non-interactively. This only works on a fresh, un-
+# initialised auth db (before Neo4j's first start), so stop it first in case the
+# apt install auto-started it. Both the 5.x ('dbms set-initial-password') and 4.x
+# ('set-initial-password') syntaxes are tried for version portability.
+print_status "Setting Neo4j initial password..."
+sudo systemctl stop neo4j 2>/dev/null
+if sudo neo4j-admin dbms set-initial-password "$NEO4J_PASS" 2>/dev/null \
+   || sudo neo4j-admin set-initial-password "$NEO4J_PASS" 2>/dev/null; then
+    # neo4j-admin run via sudo can write the auth file as root; hand it back to the
+    # service user so Neo4j can read it on start.
+    sudo chown -R neo4j:neo4j /var/lib/neo4j/data 2>/dev/null
+    print_success "Neo4j password set (user: neo4j / pass: $NEO4J_PASS)"
+else
+    print_warning "Could not set initial password (already initialised?)."
+    print_warning "  Default is neo4j/neo4j - change it at http://localhost:7474 on first login."
+fi
+
+# Enable + start so BloodHound can connect without a manual step.
+print_status "Enabling and starting Neo4j service..."
+if sudo systemctl enable neo4j --now 2>/dev/null; then
+    print_success "Neo4j running (browser: http://localhost:7474  bolt: localhost:7687)"
+    fin_msg 'Neo4j'
+else
+    print_warning "Neo4j failed to start - start it manually with 'sudo neo4j start'"
 fi
 
 
@@ -317,4 +347,21 @@ else
     print_warning "$AD_FAIL AD tools failed verification - check log file"
 fi
 
+echo ""
+echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║   Neo4j / BloodHound credentials                      ║${NC}"
+echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
+print_success "Browser: http://localhost:7474   Bolt: bolt://localhost:7687"
+print_success "Username: neo4j"
+print_success "Password: $NEO4J_PASS"
+print_status "(If the password step reported a warning above, use neo4j/neo4j and change it on first login.)"
+
+echo ""
+echo -e "${YELLOW}╔═══════════════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║   IMPORTANT: LOG OUT AND BACK IN (or reboot) NOW       ║${NC}"
+echo -e "${YELLOW}╚═══════════════════════════════════════════════════════╝${NC}"
+print_warning "A fresh login activates command logging, the uniform terminal look,"
+print_warning "docker group access, and PATH for ~/go/bin and ~/.local/bin (nxc, impacket)."
+
+echo ""
 print_success "Good Luck!"

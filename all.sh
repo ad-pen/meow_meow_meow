@@ -458,4 +458,16 @@ else
     print_warning "$FAIL tools failed verification - check log file"
 fi
 
+echo ""
+echo -e "${YELLOW}╔═══════════════════════════════════════════════════════╗${NC}"
+echo -e "${YELLOW}║   NEXT STEP                                           ║${NC}"
+echo -e "${YELLOW}╚═══════════════════════════════════════════════════════╝${NC}"
+print_status "AD team: run ./ad.sh next - it will remind you to log out when done."
+print_status "Everyone else: LOG OUT AND BACK IN (or reboot) now to activate:"
+print_warning "  - command logging      (new shells load the ~/.zshrc / ~/.bashrc hooks)"
+print_warning "  - uniform terminal look (applies to new terminal windows)"
+print_warning "  - docker group access   (run docker without sudo)"
+print_warning "  - PATH for ~/go/bin and ~/.local/bin (go & pipx tools)"
+echo ""
+
 print_success "Good Luck!"
