@@ -157,6 +157,13 @@ else
     print_warning "Terminal uniform setup reported an issue (non-critical) - see output above"
 fi
 
+print_status "Configuring Burp Suite HTTP logging..."
+if bash "$SCRIPT_DIR/burp_logging.sh"; then
+    print_success "Burp logging configured (readable log: ~/.burp_history_readable)"
+else
+    print_warning "Burp logging setup reported an issue (non-critical) - see output above"
+fi
+
 echo -e "\n${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
 echo "║     Initial Setup Complete!                           ║"
