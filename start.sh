@@ -173,4 +173,8 @@ echo "║     Good Luck!!       ~ ziadstr                       ║"
 echo "╚═══════════════════════════════════════════════════════╝"
 echo -e "${NC}\n"
 
+print_status "At engagement start, sync your logs to jVision:"
+echo "    bash \"$SCRIPT_DIR/jvis_logsync.sh\" start -i <jvision-ip> -u <jvis-user>"
+echo "    bash \"$SCRIPT_DIR/jvis_logsync.sh\" status | stop | log"
+
 
