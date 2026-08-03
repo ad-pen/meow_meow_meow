@@ -168,13 +168,64 @@ echo -e "\n${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
 echo "║     Initial Setup Complete!                           ║"
 echo "║     Log file: $LOG_FILE                               ║"
-echo "║     Next step: Run './all.sh' for full tool suite     ║"
 echo "║     Good Luck!!       ~ ziadstr                       ║"
 echo "╚═══════════════════════════════════════════════════════╝"
-echo -e "${NC}\n"
+echo -e "${NC}"
 
-print_status "At engagement start, sync your logs to jVision:"
+# --- NEXT STEPS ------------------------------------------------------------
+# Everything the operator still has to do by hand: activation of things this
+# script *installed* but did not *start*, plus commands that only make sense
+# at engagement time (jVision sync, scans).
+echo
+echo -e "${YELLOW}==============================================================${NC}"
+echo -e "${YELLOW}                       NEXT STEPS${NC}"
+echo -e "${YELLOW}==============================================================${NC}"
+
+echo
+echo -e "${BLUE}[1] Activate command logging${NC} (adds preexec hook to your shell)"
+echo "    source ~/.zshrc     # or: source ~/.bashrc, or open a fresh shell"
+echo "    New commands land in ~/.zsh_history_readable with timestamps + exit codes."
+
+echo
+echo -e "${BLUE}[2] See the uniform terminal look${NC}"
+echo "    Open a NEW qterminal or xfce4-terminal window."
+echo "    Windows opened before terminal_uniform.sh ran still show the old look."
+
+echo
+echo -e "${BLUE}[3] Verify Burp Suite auto-loads the CPTC Engagement Logger${NC}"
+echo "    Start Burp -> Extensions tab should show 'CPTC Engagement Logger'."
+echo "    Verify it works: hit Repeater once, then:"
+echo "        tail -f ~/.burp_history_readable"
+echo "    If it did NOT auto-load, see the manual instructions printed by"
+echo "    burp_logging.sh above."
+
+echo
+echo -e "${BLUE}[4] Install the full tool suite${NC} (heavy; run once per box)"
+echo "    bash \"$SCRIPT_DIR/all.sh\""
+
+echo
+echo -e "${BLUE}[5] AD-side tools${NC} (run before AD work)"
+echo "    bash \"$SCRIPT_DIR/ad.sh\""
+
+echo
+echo -e "${BLUE}[6] AT ENGAGEMENT START -- push your logs to jVision${NC}"
 echo "    bash \"$SCRIPT_DIR/jvis_logsync.sh\" start -i <jvision-ip> -u <jvis-user>"
-echo "    bash \"$SCRIPT_DIR/jvis_logsync.sh\" status | stop | log"
+echo "    Control commands:"
+echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" status"
+echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" log       # tail daemon log"
+echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" stop"
+echo "    (Prompts for your jVision password; JVIS_PASS env var also works.)"
+
+echo
+echo -e "${BLUE}[7] Run scans via the jVision client${NC} (from the jVision repo)"
+echo "    sudo python3 jvisionclient.py -i <jvision-ip> -p 7777 -s <target-subnet>"
+echo "        -n         only run the heavy scan (skip the fast pass)"
+echo "        -u         also run UDP top-50 (SNMP/DNS/NetBIOS etc.)"
+echo "    OT/ICS ports are excluded automatically -- do NOT override."
+
+echo
+echo -e "${YELLOW}==============================================================${NC}"
+echo -e "${GREEN}Setup log: $LOG_FILE${NC}"
+echo
 
 
