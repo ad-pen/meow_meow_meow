@@ -1,0 +1,9 @@
+# Nmap 7.94SVN scan initiated Mon Aug  3 21:54:31 2026 as: nmap -n -T4 --min-rate 1000 --host-timeout 20m -Pn -iL hosts_simple.txt --exclude-ports 102,502,789,1911,4911,1962,2222,4840,5450,9600,20000,20001,34962,34963,34964,44818,47808 -oA temp1
+Nmap scan report for 100.117.138.7
+Host is up (0.13s latency).
+Not shown: 996 filtered tcp ports (no-response), 2 filtered tcp ports (host-unreach)
+PORT     STATE  SERVICE
+22/tcp   open   ssh
+3389/tcp closed ms-wbt-server
+
+# Nmap done at Mon Aug  3 21:54:34 2026 -- 1 IP address (1 host up) scanned in 2.57 seconds

@@ -1,0 +1,9 @@
+Starting Nmap 7.94SVN ( https://nmap.org ) at 2026-08-03 21:54 +03
+Nmap scan report for 100.117.138.7
+Host is up (0.13s latency).
+Not shown: 996 filtered tcp ports (no-response), 2 filtered tcp ports (host-unreach)
+PORT     STATE  SERVICE
+22/tcp   open   ssh
+3389/tcp closed ms-wbt-server
+
+Nmap done: 1 IP address (1 host up) scanned in 2.57 seconds
