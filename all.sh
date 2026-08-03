@@ -47,7 +47,10 @@ apt_install() {
     for pkg in "$@"; do
         if dpkg -s "$pkg" &>/dev/null; then
             print_success "$pkg already installed"
-        elif sudo apt install -y "$pkg"; then
+        elif sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"; then
+            # 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
+            # DEBIAN_FRONTEND, so without this, debconf prompts (e.g. docker.io's
+            # "Remove all Docker data?") appear and fail non-interactive installs.
             print_success "$pkg installed"
         else
             print_warning "$pkg FAILED to install"
@@ -144,7 +147,7 @@ print_status "Installing APT packages one-by-one (this will take several minutes
 apt_install \
     apt-transport-https libssl-dev mc seclists curl golang gobuster nbtscan \
     onesixtyone oscanner smbclient smbmap smtp-user-enum snmp sslscan sipvicious \
-    tnscmd10g whatweb wkhtmltopdf hashcat feroxbuster dnsrecon redis-tools git \
+    tnscmd10g whatweb hashcat feroxbuster dnsrecon redis-tools git \
     wget aircrack-ng set sqlmap hydra docker.io openjdk-11-jdk john awscli \
     sshuttle ffuf burpsuite python3.13-venv nuclei dirsearch flameshot scrot \
     maim cyberchef enum4linux nikto wfuzz steghide binwalk exiftool \
@@ -197,7 +200,7 @@ fetch https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.s
 fetch https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/Privesc/PowerUp.ps1 ~/dropzone/privesc/PowerUp.ps1
 fetch https://github.com/peass-ng/PEASS-ng/releases/download/20241011-2e37ba11/winPEASx64.exe ~/dropzone/privesc/winpeas.exe
 fetch https://raw.githubusercontent.com/enjoiz/Privesc/refs/heads/master/privesc.ps1 ~/dropzone/privesc/privesc.ps1
-fetch https://raw.githubusercontent.com/itm4n/PrivescCheck/refs/heads/master/PrivescCheck.ps1 ~/dropzone/privesc/PrivescCheck.ps1
+fetch https://github.com/itm4n/PrivescCheck/releases/latest/download/PrivescCheck.ps1 ~/dropzone/privesc/PrivescCheck.ps1
 chmod +x ~/dropzone/privesc/linpeas.sh 2>/dev/null
 fin_msg 'Privesc Scripts'
 
@@ -215,23 +218,24 @@ fi
 print_status "Downloading upshell (TTY upgrade helper)..."
 if [ -f /usr/local/bin/upshell ]; then
     print_success "upshell already installed (skip)"
-elif fetch https://raw.githubusercontent.com/brightio/penelope/refs/heads/main/extras/tty_upgrade.sh ~/dropzone/upshell; then
+elif fetch https://raw.githubusercontent.com/brightio/penelope/main/extras/manual_tty_upgrade.sh ~/dropzone/upshell; then
     sudo cp ~/dropzone/upshell /usr/local/bin/upshell && sudo chmod +x /usr/local/bin/upshell
     print_success "upshell installed to /usr/local/bin/upshell"
     fin_msg 'upshell'
 fi
 
 print_status "Downloading chisel..."
+# chisel release assets are a gzipped BINARY (chisel_<ver>_linux_amd64.gz), NOT a
+# tarball - the old .tar.gz URL 404'd, so chisel never installed. Gunzip, don't untar.
 if command -v chisel &>/dev/null; then
     print_success "chisel already installed: $(chisel --version 2>&1)"
-elif wget -q --tries=3 --timeout=30 https://github.com/jpillora/chisel/releases/download/v1.10.1/chisel_1.10.1_linux_amd64.tar.gz -O chisel.tar.gz && \
-     tar -xzf chisel.tar.gz && chmod +x chisel && sudo mv chisel /usr/local/bin/chisel; then
+elif wget -q --tries=3 --timeout=30 https://github.com/jpillora/chisel/releases/download/v1.10.1/chisel_1.10.1_linux_amd64.gz -O chisel.gz && \
+     gunzip -f chisel.gz && chmod +x chisel && sudo mv chisel /usr/local/bin/chisel; then
     print_success "chisel installed: $(chisel --version 2>&1)"
-    rm -f chisel.tar.gz
     fin_msg 'chisel'
 else
     print_warning "chisel installation failed"
-    rm -f chisel.tar.gz
+    rm -f chisel.gz chisel
 fi
 
 

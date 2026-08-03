@@ -47,7 +47,10 @@ apt_install() {
     for pkg in "$@"; do
         if dpkg -s "$pkg" &>/dev/null; then
             print_success "$pkg already installed"
-        elif sudo apt install -y "$pkg"; then
+        elif sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"; then
+            # 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
+            # DEBIAN_FRONTEND, so without this, debconf prompts (e.g. neo4j/bloodhound
+            # preconfigure) appear and abort the non-interactive install.
             print_success "$pkg installed"
         else
             print_warning "$pkg FAILED to install"
@@ -109,43 +112,24 @@ apt_install \
     certipy-ad evil-winrm responder netexec \
     build-essential python3-dev libffi-dev
 
-# Team-wide Neo4j/BloodHound password so every AD box is identical. Change here if
-# you want a different one; it must be >= 8 chars for Neo4j to accept it.
-NEO4J_PASS="cptc12bloodhound"
-
-print_status "Configuring Neo4j for remote access..."
+# Database setup - IMPORTANT, verified live on Kali:
+#  * Kali's 'bloodhound' is BloodHound CE 9.4.0. It runs its OWN database stack and
+#    is set up/launched via bloodhound-setup / bloodhound-start (prints its own admin
+#    creds). It does NOT use the system neo4j with a password we set.
+#  * Kali's 'neo4j' package ships ONLY /usr/bin/neo4j - there is NO systemd unit, NO
+#    neo4j-admin and NO cypher-shell, so the password CANNOT be set non-interactively,
+#    and auto-starting it can clash on 7474/7687 with BloodHound CE.
+# So we do NOT auto-start/pw-set neo4j (it would fail or conflict); we configure the
+# harmless listen address and document the one command each path actually needs.
+print_status "Configuring system Neo4j listen address (harmless if unused)..."
 if [ -f "/etc/neo4j/neo4j.conf" ]; then
     sudo sed -i 's/#dbms.default_listen_address=0.0.0.0/dbms.default_listen_address=0.0.0.0/' /etc/neo4j/neo4j.conf
-    print_success "Neo4j configured for remote access"
-else
-    print_warning "Neo4j config file not found, skipping listen-address configuration"
+    print_success "Neo4j listen address configured"
 fi
-
-# Set the initial password non-interactively. This only works on a fresh, un-
-# initialised auth db (before Neo4j's first start), so stop it first in case the
-# apt install auto-started it. Both the 5.x ('dbms set-initial-password') and 4.x
-# ('set-initial-password') syntaxes are tried for version portability.
-print_status "Setting Neo4j initial password..."
-sudo systemctl stop neo4j 2>/dev/null
-if sudo neo4j-admin dbms set-initial-password "$NEO4J_PASS" 2>/dev/null \
-   || sudo neo4j-admin set-initial-password "$NEO4J_PASS" 2>/dev/null; then
-    # neo4j-admin run via sudo can write the auth file as root; hand it back to the
-    # service user so Neo4j can read it on start.
-    sudo chown -R neo4j:neo4j /var/lib/neo4j/data 2>/dev/null
-    print_success "Neo4j password set (user: neo4j / pass: $NEO4J_PASS)"
-else
-    print_warning "Could not set initial password (already initialised?)."
-    print_warning "  Default is neo4j/neo4j - change it at http://localhost:7474 on first login."
-fi
-
-# Enable + start so BloodHound can connect without a manual step.
-print_status "Enabling and starting Neo4j service..."
-if sudo systemctl enable neo4j --now 2>/dev/null; then
-    print_success "Neo4j running (browser: http://localhost:7474  bolt: localhost:7687)"
-    fin_msg 'Neo4j'
-else
-    print_warning "Neo4j failed to start - start it manually with 'sudo neo4j start'"
-fi
+print_status "Database launch is one manual command (by design - avoids port clashes):"
+print_status "  BloodHound CE : sudo bloodhound-setup   (first run, PRINTS admin creds)  then  sudo bloodhound-start"
+print_status "  Raw neo4j     : sudo neo4j start         (default neo4j/neo4j; browser forces a new pw on first login)"
+fin_msg 'Database guidance'
 
 
 
@@ -165,7 +149,7 @@ fi
 print_status "Installing SharpEfsPotato (requires mono for building)..."
 if ! command -v mono &> /dev/null; then
     print_status "Installing mono for C# compilation..."
-    sudo apt install -y mono-complete mono-devel
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y mono-complete mono-devel
 fi
 
 if [ ! -d "SharpEfsPotato" ]; then
@@ -387,12 +371,11 @@ fi
 
 echo ""
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║   Neo4j / BloodHound credentials                      ║${NC}"
+echo -e "${GREEN}║   BloodHound / Neo4j - how to launch                  ║${NC}"
 echo -e "${GREEN}╚═══════════════════════════════════════════════════════╝${NC}"
-print_success "Browser: http://localhost:7474   Bolt: bolt://localhost:7687"
-print_success "Username: neo4j"
-print_success "Password: $NEO4J_PASS"
-print_status "(If the password step reported a warning above, use neo4j/neo4j and change it on first login.)"
+print_success "BloodHound CE:  sudo bloodhound-setup   (first time - PRINTS its admin creds)"
+print_success "                then  sudo bloodhound-start   (stop: sudo bloodhound-stop)"
+print_success "Raw neo4j (legacy tooling):  sudo neo4j start  ->  http://localhost:7474  (neo4j/neo4j, set new pw on 1st login)"
 
 echo ""
 echo -e "${YELLOW}╔═══════════════════════════════════════════════════════╗${NC}"

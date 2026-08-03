@@ -4,8 +4,8 @@
 # ~/.zsh_history_readable  ->  hand this over if the client asks for activity logs.
 # Both zsh and bash interactive shells write to the same log.
 #
-# Each line: <time> [<working dir>] (exit <code>) <command>
-#   2026-07-07 22:05:01 [/home/mewo/engagement] (exit 0) nmap -sV 10.0.0.5
+# Each line: <time> (exit <code>) <command>
+#   2026-07-07 22:05:01 (exit 0) nmap -sV 10.0.0.5
 #
 # Credentials are redacted from the LOG (the command still runs unchanged):
 # passwords, NTLM hashes and Kerberos keys become [REDACTED] for known tools
@@ -46,9 +46,9 @@ export HISTSIZE=100000
 export SAVEHIST=100000
 setopt EXTENDED_HISTORY INC_APPEND_HISTORY
 
-# Human-readable log with time, working dir and exit status for the client.
+# Human-readable log with time and exit status for the client.
 _cptc_log=~/.zsh_history_readable
-typeset -g _cptc_cmd _cptc_cwd _cptc_ts
+typeset -g _cptc_cmd _cptc_ts
 
 # Credential redaction: scrub passwords/hashes/keys from the LOGGED text only
 # (the command still RUNS unmodified). Usernames are partially masked: the first
@@ -87,7 +87,7 @@ _cptc_redact() {
     "
     # tool-gated: short flags are ambiguous, so key off the detected tool.
     # -p = password (NOT nmap -p port)
-    case " netexec nxc crackmapexec cme evil-winrm evil-winrm.rb hydra medusa smbmap bloodhound.py bloodhound-python " in
+    case " netexec nxc crackmapexec cme evil-winrm evil-winrm.rb hydra medusa smbmap bloodhound.py bloodhound-python bloodyAD bloodyad " in
       *" $tool "*) prog="$prog
         s/((-p)([[:space:]]+|=))$V/\\1[REDACTED]/g" ;;
     esac
@@ -140,7 +140,7 @@ _cptc_redact() {
     # Gated to tools where these mean a login (NOT nmap -u, sort -u, docker -u,
     # systemctl --user, ...). The value class stops at ':' so the curl/wget
     # "-u user:pass" form is handled here too (pass already [REDACTED] above).
-    case " netexec nxc crackmapexec cme evil-winrm evil-winrm.rb smbmap medusa curl wget " in
+    case " netexec nxc crackmapexec cme evil-winrm evil-winrm.rb smbmap medusa curl wget bloodyAD bloodyad " in
       *" $tool "*) prog="$prog"'
         s#((-u|--user|--username)([[:space:]]+|=)[[:alnum:]._$-]{2})[[:alnum:]._$-]+#\1[REDACTED]#g' ;;
     esac
@@ -149,15 +149,14 @@ _cptc_redact() {
 
 _cptc_preexec() {
     _cptc_cmd=$1
-    _cptc_cwd=$PWD
     _cptc_ts=$(date '+%Y-%m-%d %H:%M:%S')   # time the command was launched
 }
 _cptc_precmd() {
     local ret=$?                            # must be captured first
     [[ -n $_cptc_cmd ]] || return           # skip empty prompts / startup
     local safe=$(_cptc_redact "$_cptc_cmd") # scrub secrets before writing
-    printf '%s [%s] (exit %d) %s\n' \
-        "$_cptc_ts" "$_cptc_cwd" "$ret" "$safe" >> "$_cptc_log"
+    printf '%s (exit %d) %s\n' \
+        "$_cptc_ts" "$ret" "$safe" >> "$_cptc_log"
     _cptc_cmd=
 }
 # add-zsh-hook APPENDS to the preexec/precmd hook arrays instead of replacing a
@@ -185,7 +184,7 @@ export HISTFILESIZE=100000
 export HISTTIMEFORMAT='%Y-%m-%d %H:%M:%S '
 shopt -s histappend
 
-# Human-readable log with time, working dir and exit status for the client.
+# Human-readable log with time and exit status for the client.
 # Reads bash's own history to get the exact line typed (full pipelines/&&),
 # de-duped by history number. Time logged is when the command RETURNED.
 _cptc_log=~/.zsh_history_readable
@@ -230,7 +229,7 @@ _cptc_redact() {
     "
     # tool-gated: short flags are ambiguous, so key off the detected tool.
     # -p = password (NOT nmap -p port)
-    case " netexec nxc crackmapexec cme evil-winrm evil-winrm.rb hydra medusa smbmap bloodhound.py bloodhound-python " in
+    case " netexec nxc crackmapexec cme evil-winrm evil-winrm.rb hydra medusa smbmap bloodhound.py bloodhound-python bloodyAD bloodyad " in
       *" $tool "*) prog="$prog
         s/((-p)([[:space:]]+|=))$V/\\1[REDACTED]/g" ;;
     esac
@@ -283,7 +282,7 @@ _cptc_redact() {
     # Gated to tools where these mean a login (NOT nmap -u, sort -u, docker -u,
     # systemctl --user, ...). The value class stops at ':' so the curl/wget
     # "-u user:pass" form is handled here too (pass already [REDACTED] above).
-    case " netexec nxc crackmapexec cme evil-winrm evil-winrm.rb smbmap medusa curl wget " in
+    case " netexec nxc crackmapexec cme evil-winrm evil-winrm.rb smbmap medusa curl wget bloodyAD bloodyad " in
       *" $tool "*) prog="$prog"'
         s#((-u|--user|--username)([[:space:]]+|=)[[:alnum:]._$-]{2})[[:alnum:]._$-]+#\1[REDACTED]#g' ;;
     esac
@@ -301,8 +300,8 @@ _cptc_precmd() {
     _cptc_last_hist=$num
     cmd=${line#*"$num"}; cmd=${cmd#"${cmd%%[![:space:]]*}"}  # strip num + ltrim
     cmd=$(_cptc_redact "$cmd")                               # scrub secrets before writing
-    printf '%s [%s] (exit %d) %s\n' \
-        "$(date '+%Y-%m-%d %H:%M:%S')" "$PWD" "$ret" "$cmd" >> "$_cptc_log"
+    printf '%s (exit %d) %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$ret" "$cmd" >> "$_cptc_log"
 }
 # Keep our logger armed even if something reassigns PROMPT_COMMAND. Kali's stock
 # .bashrc sets PROMPT_COMMAND="PROMPT_COMMAND=echo" (a newline-before-prompt hack)
