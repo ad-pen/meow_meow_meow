@@ -17,6 +17,8 @@
 
 set -eu
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 PID_FILE="$HOME/.jvis_logsync.pid"
 LOG_FILE="$HOME/.jvis_logsync.log"
 
@@ -29,6 +31,7 @@ find_script() {
         echo "$JVIS_PY"; return 0
     fi
     for p in \
+        "$SCRIPT_DIR/jvis_logsync.py" \
         "$HOME/cptc/jvesion/Princess-Sumaya-University-for-Technology/jVision/jvis_logsync.py" \
         "$HOME/jVision/jvis_logsync.py" \
         "$HOME/cptc/jVision/jvis_logsync.py" \
@@ -62,9 +65,14 @@ cmd_start() {
 
     local script; script=$(find_script) || {
         echo -e "${RED}jvis_logsync.py not found${NC}" >&2
-        echo "Set JVIS_PY=/path/to/jvis_logsync.py or clone the jVision repo to one of:" >&2
+        echo "Looked in:" >&2
+        echo "  \$JVIS_PY env var" >&2
+        echo "  $SCRIPT_DIR/  (next to this launcher)" >&2
         echo "  ~/cptc/jvesion/Princess-Sumaya-University-for-Technology/jVision/" >&2
-        echo "  ~/jVision/" >&2
+        echo "  ~/jVision/, ~/cptc/jVision/, /opt/jVision/" >&2
+        echo "" >&2
+        echo "Fix: either download jvis_logsync.py into $SCRIPT_DIR, or" >&2
+        echo "     export JVIS_PY=/full/path/to/jvis_logsync.py before running." >&2
         exit 3
     }
 
