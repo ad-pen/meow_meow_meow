@@ -67,7 +67,13 @@ else
                 <a href="download/diagram" class="btn btn-info" role="button" target="_top">Download Diagram</a>
             </div>
             <div class="p-1">
-                <a href="download/topology" class="btn btn-info" role="button" target="_top">Download Topology</a>
+                <a href="download/topology" class="btn btn-info" role="button" target="_top">Download Topology (drawio csv)</a>
+            </div>
+            <div class="p-1">
+                <a href="download/topology.svg" class="btn btn-info" role="button" target="_top">Download Topology (SVG)</a>
+            </div>
+            <div class="p-1">
+                <a href="download/topology.drawio" class="btn btn-info" role="button" target="_top">Download Topology (drawio)</a>
             </div>
             <div class="p-1">
                 <CopyToClipboard Text=@string.Join("\n", filteredBoxes.Select(i=>i.Ip)) Title="Copy Host List" />

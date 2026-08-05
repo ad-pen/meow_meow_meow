@@ -25,7 +25,9 @@
 
             <div>
                 <label>Mode</label>
-                <select class="form-control custom-select" @bind="_bulkMode">
+                <select class="form-control custom-select"
+                        value="@(_bulkMode ? "true" : "false")"
+                        @onchange="OnModeChanged">
                     <option value="false">Single</option>
                     <option value="true">Bulk paste</option>
                 </select>
@@ -35,14 +37,15 @@
             {
                 <div>
                     <label>Credential</label>
-                    <input placeholder="e.g. Administrator:Passw0rd!" @bind="_credText" class="form-control" />
+                    <input placeholder="e.g. Administrator:Passw0rd!"
+                           @bind="_credText" @bind:event="oninput" class="form-control" />
                 </div>
             }
 
             <div style="flex:1; min-width:200px;">
                 <label>Source</label>
                 <input placeholder="obtained via SMB relay on 10.0.5.44"
-                       @bind="_source" class="form-control" />
+                       @bind="_source" @bind:event="oninput" class="form-control" />
             </div>
 
             <div>
@@ -55,10 +58,17 @@
             <div class="form-group">
                 <label>Paste creds (one per line — Source above applies to all)</label>
                 <textarea class="form-control" rows="6" placeholder="line1&#10;line2&#10;..."
-                          @bind="_bulkText"></textarea>
+                          value="@_bulkText" @oninput="OnBulkInput"></textarea>
+                <small class="text-muted">
+                    @(_bulkText?.Split('\n').Where(l => !string.IsNullOrWhiteSpace(l)).Count() ?? 0) non-empty line(s) ready to submit
+                </small>
             </div>
         }
 
+        @if (!string.IsNullOrEmpty(_status))
+        {
+            <div class="alert alert-success" style="margin-top:8px;">@_status</div>
+        }
         @if (!string.IsNullOrEmpty(_error))
         {
             <div class="alert alert-warning" style="margin-top:8px;">@_error</div>
@@ -118,11 +128,31 @@
     private string requestUri = "Creds";
     private HubConnection hubConnection;
     private string _error;
+    private string _status;
 
     private string _credText;
     private string _source;
     private string _bulkText;
     private bool _bulkMode;
+
+    // Explicit change handler for the Mode dropdown. `@bind` on <select value>
+    // to a bool used to work only intermittently in Blazor 5 (the string→bool
+    // converter would silently keep _bulkMode = false), leaving the textarea
+    // hidden and Submit doing nothing.
+    private void OnModeChanged(ChangeEventArgs e)
+    {
+        _bulkMode = e.Value?.ToString() == "true";
+        _error = null;
+        _status = null;
+    }
+
+    // Explicit oninput for the textarea. Same reasoning as above: default
+    // @bind="_bulkText" only fires onchange (i.e. blur). A paste-then-immediate-
+    // click would send an empty _bulkText and Submit did nothing.
+    private void OnBulkInput(ChangeEventArgs e)
+    {
+        _bulkText = e.Value?.ToString() ?? "";
+    }
 
     private record Column(string Label, string Type);
     private readonly Column[] _columns = new[]
@@ -173,33 +203,53 @@
     private async Task AddOrBulk()
     {
         _error = null;
-        if (_bulkMode)
+        _status = null;
+        try
         {
-            var lines = (_bulkText ?? "")
-                .Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(l => l.Trim())
-                .Where(l => l.Length > 0)
-                .ToList();
-            if (lines.Count == 0) { _error = "nothing pasted"; return; }
-            var payload = lines.Select(l => new Cred
+            if (_bulkMode)
             {
-                Text = l, Type = drop.ToString(), Source = _source, Verified = false,
-            }).ToList();
-            var r = await Http.PostAsJsonAsync($"{requestUri}/bulk", payload);
-            if (!r.IsSuccessStatusCode) { _error = r.ReasonPhrase; return; }
-            _bulkText = "";
+                var lines = (_bulkText ?? "")
+                    .Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(l => l.Trim())
+                    .Where(l => l.Length > 0)
+                    .ToList();
+                if (lines.Count == 0) { _error = "nothing pasted"; return; }
+                var payload = lines.Select(l => new Cred
+                {
+                    Text = l, Type = drop.ToString(), Source = _source, Verified = false,
+                }).ToList();
+                var r = await Http.PostAsJsonAsync($"{requestUri}/bulk", payload);
+                if (!r.IsSuccessStatusCode)
+                {
+                    var body = await r.Content.ReadAsStringAsync();
+                    _error = $"bulk POST failed: {(int)r.StatusCode} {r.ReasonPhrase} — {body}";
+                    return;
+                }
+                var added = await r.Content.ReadFromJsonAsync<int>();
+                _status = $"queued {lines.Count} line(s) — server added {added} new ({lines.Count - added} deduped)";
+                _bulkText = "";
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(_credText)) { _error = "empty credential"; return; }
+                var newCred = new Cred
+                {
+                    Text = _credText.Trim(), Type = drop.ToString(),
+                    Source = _source, Verified = false,
+                };
+                var r = await Http.PostAsJsonAsync(requestUri, newCred);
+                if (!r.IsSuccessStatusCode)
+                {
+                    var body = await r.Content.ReadAsStringAsync();
+                    _error = $"POST failed: {(int)r.StatusCode} {r.ReasonPhrase} — {body}";
+                    return;
+                }
+                _credText = "";
+            }
         }
-        else
+        catch (Exception ex)
         {
-            if (string.IsNullOrWhiteSpace(_credText)) { _error = "empty credential"; return; }
-            var newCred = new Cred
-            {
-                Text = _credText.Trim(), Type = drop.ToString(),
-                Source = _source, Verified = false,
-            };
-            var r = await Http.PostAsJsonAsync(requestUri, newCred);
-            if (!r.IsSuccessStatusCode) { _error = r.ReasonPhrase; return; }
-            _credText = "";
+            _error = "submit threw: " + ex.Message;
         }
     }
 
@@ -211,8 +261,11 @@
 
     private async Task CopyOne(string text)
     {
-        try { await _JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", text); }
-        catch { /* best-effort; the copy-all button uses a JS shim */ }
+        // Route through the same clipboardCopy.copyText shim in index.html used
+        // by the copy-all button. Calling navigator.clipboard.writeText via
+        // JSRuntime string-path loses `this` binding and throws "Illegal invocation".
+        try { await _JSRuntime.InvokeVoidAsync("clipboardCopy.copyText", text); }
+        catch { /* best-effort */ }
     }
 
     private async Task DeleteCred(Cred c)

@@ -6,10 +6,17 @@
 @inject NavigationManager NavigationManager
 @implements IAsyncDisposable
 
-<h3>Engagement Logs</h3>
+<div class="d-flex align-items-center" style="gap:12px; margin-bottom:8px;">
+    <h3 style="margin:0; flex:1;">Engagement Logs</h3>
+    <a href="logs/export" class="btn btn-info" role="button" target="_top">
+        <span class="oi oi-data-transfer-download" style="margin-right:4px;"></span>
+        Download XLSX
+    </a>
+</div>
 <p class="text-muted" style="margin-bottom:16px;">
     One card per team member. Click a name to open that operator's live log
-    stream in a popup.
+    stream in a popup. Download exports one sheet per operator with bash and
+    burp columns.
 </p>
 
 @if (_error != null)

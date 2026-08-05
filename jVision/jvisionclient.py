@@ -118,7 +118,13 @@ class Beautifier:
                 json_services.append(json_port)
 
             json_host['services'] = json_services
-            self.json_object.append(json_host)
+
+            # Only keep hosts that actually have an open port. A bare /24 scan
+            # returns every pingable host (routers, firewalls, IoT with zero
+            # exposed TCP), and dumping those into jVision buries the real
+            # targets. Filtered/closed-only hosts are noise for the operator.
+            if any((s.get('state') or '').lower() == 'open' for s in json_services):
+                self.json_object.append(json_host)
 
     def upload_file(self):
         r = requests.post('{}/box'.format(self.target_server),

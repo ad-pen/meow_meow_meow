@@ -38,6 +38,27 @@ namespace jVision.Server.Controllers
 
         }
 
+        // SVG rendered directly on the server -- opens in any browser and is
+        // editable in Inkscape. Meant for at-a-glance "who's where" reports.
+        [HttpGet("topology.svg")]
+        public IActionResult DownloadTopologySvg()
+        {
+            var boxes = _context.Boxes.Include(i => i.Services).ToList();
+            var bytes = TopologyRenderer.RenderSvg(boxes);
+            return File(bytes, "image/svg+xml", "topology.svg");
+        }
+
+        // Standalone draw.io file (mxGraphModel already laid out) -- unlike the
+        // existing topology.csv which needs draw.io's csvimport step, this one
+        // opens directly in app.diagrams.net or the desktop drawio client.
+        [HttpGet("topology.drawio")]
+        public IActionResult DownloadTopologyDrawio()
+        {
+            var boxes = _context.Boxes.Include(i => i.Services).ToList();
+            var bytes = TopologyRenderer.RenderDrawio(boxes);
+            return File(bytes, "application/xml", "topology.drawio");
+        }
+
         private FileResult CreateTopology(List<Box> bl)
         {
             var subnets = bl.Select(i => i.Subnet).Distinct().ToList();

@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using ClosedXML.Excel;
 using jVision.Server.Data;
 using jVision.Server.Hubs;
 using jVision.Shared.Models;
@@ -78,6 +81,82 @@ namespace jVision.Server.Controllers
             await _context.SaveChangesAsync();
             await _hubContext.Clients.All.LogsAdded(entries.Count);
             return Ok(entries.Count);
+        }
+
+        // GET /logs/export -- one XLSX, one worksheet per operator, two columns:
+        // A=bash (zsh), B=burp. Chronological, independent lists (bash and burp
+        // rows don't line up by timestamp -- they're independent streams).
+        [HttpGet("export")]
+        public async Task<IActionResult> Export()
+        {
+            var all = await _context.LogEntry
+                .OrderBy(l => l.Operator).ThenBy(l => l.Timestamp)
+                .ToListAsync();
+
+            using var wb = new XLWorkbook();
+
+            if (all.Count == 0)
+            {
+                var empty = wb.Worksheets.Add("logs");
+                empty.Cell(1, 1).Value = "no logs";
+            }
+            else
+            {
+                foreach (var opGroup in all.GroupBy(l => l.Operator ?? "unknown"))
+                {
+                    var ws = wb.Worksheets.Add(SafeSheetName(opGroup.Key, wb));
+                    ws.Cell(1, 1).Value = "bash";
+                    ws.Cell(1, 2).Value = "burp";
+                    ws.Row(1).Style.Font.Bold = true;
+
+                    var bash = opGroup.Where(l => l.Source == "zsh").ToList();
+                    var burp = opGroup.Where(l => l.Source == "burp").ToList();
+
+                    for (int i = 0; i < bash.Count; i++)
+                        ws.Cell(i + 2, 1).Value = FormatLine(bash[i]);
+                    for (int i = 0; i < burp.Count; i++)
+                        ws.Cell(i + 2, 2).Value = FormatLine(burp[i]);
+
+                    // AdjustToContents() calls into System.Drawing to measure
+                    // text width, which needs libgdiplus at runtime -- the
+                    // aspnet:5.0 base image doesn't have it. Fixed widths avoid
+                    // the extra apt dependency; user can double-click the
+                    // column edge in Excel to auto-fit.
+                    ws.Column(1).Width = 90;
+                    ws.Column(2).Width = 90;
+                    ws.SheetView.FreezeRows(1);
+                }
+            }
+
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            var name = $"jvision-logs-{DateTime.UtcNow:yyyy-MM-dd-HHmm}.xlsx";
+            return File(ms.ToArray(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                name);
+        }
+
+        private static string FormatLine(LogEntry l) =>
+            $"[{l.Timestamp.ToLocalTime():yyyy-MM-dd HH:mm:ss}] {l.Line}";
+
+        // Excel: sheet names <=31 chars, cannot contain \ / ? * [ ] :, and must
+        // be unique per workbook (case-insensitive).
+        private static readonly Regex _sheetBad = new Regex(@"[\\/\?\*\[\]:]");
+        private static string SafeSheetName(string raw, XLWorkbook wb)
+        {
+            var cleaned = _sheetBad.Replace(raw ?? "", "_").Trim();
+            if (string.IsNullOrEmpty(cleaned)) cleaned = "unknown";
+            if (cleaned.Length > 31) cleaned = cleaned.Substring(0, 31);
+
+            var candidate = cleaned;
+            int n = 2;
+            while (wb.Worksheets.Any(w => string.Equals(w.Name, candidate, StringComparison.OrdinalIgnoreCase)))
+            {
+                var suffix = $"~{n++}";
+                var trimTo = Math.Max(1, 31 - suffix.Length);
+                candidate = cleaned.Substring(0, Math.Min(cleaned.Length, trimTo)) + suffix;
+            }
+            return candidate;
         }
     }
 }
