@@ -98,20 +98,35 @@ echo -e "${NC}"
 # start.sh runs. Do not re-add inline HISTSIZE/preexec lines here - command_logging.sh
 # refuses to run when it detects those stale, un-guarded hooks in ~/.zshrc.
 
-if xfconf-query -c xfwm4 -p /general/use_compositing -s false ; then
-    print_success "Shell display settings configured"
-else 
-    print_warning "Shell display configuration failed"
+# Only meaningful with an X session under xfce. Previously this ran unguarded as the
+# very first action, so on a headless / SSH-only box the script opened with a red
+# failure line before doing anything real.
+if [ -n "${DISPLAY:-}" ] && command -v xfconf-query >/dev/null 2>&1; then
+    if xfconf-query -c xfwm4 -p /general/use_compositing -s false; then
+        print_success "Shell display settings configured"
+    else
+        print_warning "Shell display configuration failed"
+    fi
+else
+    print_status "No X session (or xfconf-query absent) - skipping compositing tweak"
 fi
 
 
 if [ -d "$HOME/dropzone" ]; then
     print_warning "Dropzone directory exists, maybe you ran this before?"
-    read -p "Continue anyway? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_error "Installation cancelled by user"
-        exit 1
+    # Re-running is the NORMAL case: apt_install / pip_ensure / fetch / go_install are
+    # all idempotent and skip completed work. Only prompt if a human is actually there;
+    # without a TTY, default to continuing instead of aborting. (Previously any
+    # non-interactive re-run died here with "Installation cancelled by user".)
+    if [ -t 0 ]; then
+        read -p "Continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_error "Installation cancelled by user"
+            exit 1
+        fi
+    else
+        print_status "No TTY - assuming re-run is intended (installers are idempotent)."
     fi
     print_status "Continuing with installation..."
 fi
@@ -148,23 +163,43 @@ apt_install \
     apt-transport-https libssl-dev mc seclists curl golang gobuster nbtscan \
     onesixtyone oscanner smbclient smbmap smtp-user-enum snmp sslscan sipvicious \
     tnscmd10g whatweb hashcat feroxbuster dnsrecon redis-tools git \
-    wget aircrack-ng set sqlmap hydra docker.io openjdk-11-jdk john awscli \
-    sshuttle ffuf burpsuite python3.13-venv nuclei dirsearch flameshot scrot \
+    wget aircrack-ng set sqlmap hydra docker.io docker-compose openjdk-11-jdk john awscli \
+    sshuttle ffuf burpsuite python3-venv nuclei dirsearch flameshot scrot \
     maim cyberchef enum4linux nikto wfuzz steghide binwalk exiftool \
     netcat-traditional socat proxychains4 masscan metasploit-framework responder \
-    crackmapexec zaproxy wireshark tcpdump tmux screen remmina terminator
+    crackmapexec netexec zaproxy wireshark tcpdump tmux screen remmina terminator
+# Notes on three entries above:
+#  * docker-compose      - Kali packages Compose v2 (2.40.3-3). This replaces an 8-line
+#                          curl of a ~49 MB binary from GitHub into /usr/local/bin, i.e.
+#                          one less network dependency in the first hour.
+#  * python3-venv        - was pinned to python3.13-venv. That package exists today and
+#                          Kali's default python3 IS 3.13, so the pin was not broken - but
+#                          the metapackage tracks the default and survives a version bump.
+#  * crackmapexec+netexec- cme is still in Kali (5.4.0) so it is kept, but it is the
+#                          deprecated tool. netexec (1.5.1) was only ever installed by
+#                          ad.sh, so web/cloud operators who never run ad.sh had no nxc.
 
-print_status "Installing docker-compose..."
-if command -v docker-compose &>/dev/null; then
-    print_success "docker-compose already installed: $(docker-compose --version 2>&1)"
-elif sudo curl -fSL --retry 3 --connect-timeout 15 "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose && sudo chmod +x /usr/local/bin/docker-compose; then
-    print_success "docker-compose installed: $(docker-compose --version 2>&1)"
-else
-    print_warning "docker-compose installation failed (non-critical)"
-fi
+# --- Reporting pipeline dependencies ---------------------------------------
+# The report builder (zozo) imports docx, fitz, PIL and pytesseract, and now reads an
+# .xlsx findings sheet. NONE of these were installed by any script, so on a fresh VDI
+# the most point-bearing tool the team owns could not run at all. All are native Kali
+# packages - no pip, no --break-system-packages.
+# Trim libreoffice-writer if disk is tight; it is only needed for docx->pdf conversion.
+#
+# python3-fitz IS REQUIRED and python3-pymupdf alone is NOT enough. Verified on Kali:
+# python3-pymupdf provides 'import pymupdf' only, and zozo's tools do 'import fitz'.
+# The legacy fitz alias ships in the separate python3-fitz package.
+#   with python3-pymupdf only : ModuleNotFoundError: No module named 'fitz'
+#   after python3-fitz        : import fitz OK (PyMuPDF 1.26.7)
+print_status "Installing reporting pipeline dependencies..."
+apt_install \
+    tesseract-ocr python3-docx python3-openpyxl python3-pil \
+    python3-pytesseract python3-pymupdf python3-fitz libreoffice-writer
 
 print_status "Adding user to docker group..."
-if sudo usermod -aG docker $USER; then
+# "$(id -un)" not "$USER": with 'set -u' an unset USER (sudo -i, cron, some non-login
+# shells) aborts the whole script with "USER: unbound variable".
+if sudo usermod -aG docker "$(id -un)"; then
     print_success "User added to docker group (logout/login required)"
 else
     print_warning "Failed to add user to docker group"
@@ -367,21 +402,26 @@ PASS=0
 FAIL=0
 WARN=0
 
+# NOTE on the counters below: they use VAR=$((VAR+1)), never ((VAR++)).
+# ((VAR++)) is post-increment: it returns the OLD value, so when the counter is still
+# 0 the arithmetic result is 0 and bash treats that as EXIT STATUS 1. Any
+# 'cmd && ok && ((PASS++)) || fail' chain then runs the failure branch too. That bug
+# was live below and printed "X verified" and "X NOT working" for the same tool.
 check_tool() {
     local tool=$1
     local test_cmd=${2:-"$tool --version"}
 
-    if command -v $tool &> /dev/null; then
+    if command -v "$tool" &> /dev/null; then
         if eval "$test_cmd" &> /dev/null; then
             print_success "$tool verified"
-            ((PASS++))
+            PASS=$((PASS+1))
         else
             print_warning "$tool installed but may not be functional"
-            ((WARN++))
+            WARN=$((WARN+1))
         fi
     else
         print_error "$tool NOT installed"
-        ((FAIL++))
+        FAIL=$((FAIL+1))
     fi
 }
 
@@ -389,12 +429,23 @@ check_file() {
     local file=$1
     local desc=$2
 
-    if [ -f "$file" ]; then
+    if [ -e "$file" ]; then
         print_success "$desc verified"
-        ((PASS++))
+        PASS=$((PASS+1))
     else
         print_error "$desc NOT found"
-        ((FAIL++))
+        FAIL=$((FAIL+1))
+    fi
+}
+
+# $1 = python module name, $2 = human label
+check_pymod() {
+    if python3 -c "import $1" &> /dev/null; then
+        print_success "$2 verified"
+        PASS=$((PASS+1))
+    else
+        print_error "$2 NOT working"
+        FAIL=$((FAIL+1))
     fi
 }
 
@@ -415,11 +466,30 @@ print_status "Checking network tools..."
 check_tool "chisel"
 check_tool "socat" "socat -V"
 check_tool "proxychains4" "command -v proxychains4"
+check_tool "sshuttle" "command -v sshuttle"
 
 print_status "Checking password tools..."
 check_tool "hydra" "command -v hydra"
 check_tool "john" "command -v john"
 check_tool "hashcat"
+
+print_status "Checking exploitation / traffic tools..."
+check_tool "msfconsole" "command -v msfconsole"
+check_tool "responder" "command -v responder"
+check_tool "tcpdump" "command -v tcpdump"
+check_tool "tshark" "command -v tshark"
+check_tool "burpsuite" "command -v burpsuite"
+check_tool "netexec" "command -v netexec"
+
+print_status "Checking container tooling..."
+check_tool "docker" "docker --version"
+check_tool "docker-compose" "docker-compose version"
+
+print_status "Checking Go tools..."
+check_tool "httpx" "command -v httpx"
+check_tool "subfinder" "command -v subfinder"
+check_tool "httprobe" "command -v httprobe"
+check_tool "waybackurls" "command -v waybackurls"
 
 print_status "Checking screenshot tools..."
 check_tool "flameshot"
@@ -429,13 +499,29 @@ print_status "Checking privilege escalation scripts..."
 check_file "$HOME/dropzone/privesc/linpeas.sh" "linpeas.sh"
 check_file "$HOME/dropzone/privesc/winpeas.exe" "winpeas.exe"
 check_file "$HOME/dropzone/pspy64" "pspy64"
+check_file "$HOME/dropzone/username-anarchy" "username-anarchy"
+check_file "/usr/local/bin/upshell" "upshell"
+
+print_status "Checking cloned repos..."
+check_file "$HOME/dropzone/nuclei-templates" "nuclei-templates"
+check_file "$HOME/dropzone/SSTImap" "SSTImap"
 
 print_status "Checking wordlists..."
 check_file "/usr/share/wordlists/rockyou.txt" "rockyou.txt"
+check_file "/usr/share/seclists" "SecLists"
 
 print_status "Checking Python packages..."
-python3 -c "import requests" 2>/dev/null && print_success "requests verified" && ((PASS++)) || (print_error "requests NOT working" && ((FAIL++)))
-python3 -c "import pwn" 2>/dev/null && print_success "pwntools verified" && ((PASS++)) || (print_error "pwntools NOT working" && ((FAIL++)))
+check_pymod requests "requests"
+check_pymod pwn "pwntools"
+
+print_status "Checking reporting pipeline dependencies..."
+check_pymod docx "python-docx"
+check_pymod openpyxl "openpyxl"
+check_pymod PIL "Pillow"
+check_pymod pytesseract "pytesseract"
+check_pymod fitz "PyMuPDF (fitz)"
+check_tool "tesseract" "tesseract --version"
+check_tool "soffice" "command -v soffice"
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════${NC}"

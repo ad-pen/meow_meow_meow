@@ -52,7 +52,16 @@ echo -e "${NC}"
 if [ "$(id -u)" -eq 0 ]; then
     print_warning "Running as root: per-user logging/terminal config would apply to /root, not your user."
     print_warning "Recommended: run this as your normal user (it will prompt for sudo itself)."
-    read -p "Continue as root anyway? (y/N): " -n 1 -r; echo
+    # Only prompt when a real terminal is attached. stdout is already piped through
+    # tee (line 13), so on a non-interactive run the prompt text never renders and
+    # the script looks like it froze before aborting. Refusing to continue as root
+    # without a TTY is the correct default here - just say why.
+    if [ -t 0 ]; then
+        read -p "Continue as root anyway? (y/N): " -n 1 -r; echo
+    else
+        print_error "No TTY attached, so this cannot be confirmed interactively."
+        REPLY=n
+    fi
     [[ $REPLY =~ ^[Yy]$ ]] || { print_error "Aborted. Re-run as the normal user."; exit 1; }
 fi
 
