@@ -9,58 +9,54 @@ using jVision.Server.Models;
 
 namespace jVision.Server.Download
 {
-    // "APT report" topology renderer -- mimics the reference layout used in
-    // typical pentest report figures (see network top/ WhatsApp Image ...):
+    // Network topology renderer — row-wise layout (3 subnets per row):
     //
     //   +--------------------------+
     //   |     Attacker Network     |   dashed box, hooded-figure monitor
     //   +--------------------------+
-    //              |
-    //              v
-    //          [ CISCO ]              cyan cylinder with 4 radiating arrows
-    //          [ ROUTER]  <subnets>
-    //              |
-    //              v
-    //   +--------------------------+
-    //   | Production Network       |   big outer dashed frame
-    //   |  +-----------+ +-------+ |
-    //   |  | subnet A  | | sub B | |   one dashed sub-box per unique subnet
-    //   |  |  [W][W][W]| |  [L]  | |   Windows tile / Linux globe monitors
-    //   |  +-----------+ +-------+ |   IP bold + hostname below each device
-    //   +--------------------------+
+    //              |  ↓
+    //          [ ROUTER ]             clean cyan cylinder, no coloured arrow shapes
+    //              |  ↓
+    //   [subnet A] [subnet B] [subnet C]   dashed sub-boxes, 3 per row
+    //   [subnet D] [subnet E] [subnet F]
+    //
+    //  Each device shows an OS-specific monitor icon (Linux Tux or Windows flag)
+    //  and the IP address only — no hostname notes, no "Production Network" frame,
+    //  no subnet labels next to the router.
     //
     // Mapping from jVision data:
-    //   Box.Subnet   -> sub-environment label (one sub-box per distinct value)
-    //   Box.Hostname -> shown under IP
-    //   Box.Ip       -> bold label
-    //   Box.Os       -> icon selector ("windows" -> tile, else -> globe)
+    //   Box.Subnet -> sub-environment label (one sub-box per distinct value)
+    //   Box.Ip     -> bold label under each device
+    //   Box.Os     -> icon selector ("windows" → Windows flag, else → Linux Tux)
     public static class TopologyRenderer
     {
-        // ---- Layout constants (kept close to the option4 mockup) ----
-        private const int CanvasMinW = 1220;
-        private const int OuterPadX = 40;
+        // ---- Layout constants ----
+        private const int CanvasMinW = 1280;
+        private const int OuterPadX = 45;
 
         private const int AttackerW = 200, AttackerH = 180;
         private const int AttackerTopY = 30;
 
-        private const int RouterW = 100, RouterH = 60;
-        private const int RouterTopY = 285;
+        private const int RouterW = 100, RouterH = 58;
+        private const int RouterTopY = 280;
 
-        private const int OuterFrameTopY = 420;
-        private const int OuterFramePad = 30;              // gap inside outer frame
+        // OuterFrameTopY is reused only as the Y where subnet rows begin
+        // (no actual outer frame is drawn any more).
+        private const int OuterFrameTopY = 400;
+        private const int OuterFramePad = 0;
 
         // Sub-environment box
         private const int SubBoxMinW = 380;
-        private const int SubBoxHeaderH = 30;
-        private const int SubBoxPadX = 20, SubBoxPadY = 20;
+        private const int SubBoxHeaderH = 28;
+        private const int SubBoxPadX = 22, SubBoxPadY = 14;
 
-        // Device cell (icon + labels)
-        private const int IconW = 60, IconH = 52;
-        private const int CellW = 170, CellH = 130;        // includes label area
+        // Device cell (icon + IP label only)
+        private const int IconW = 52, IconH = 45;
+        private const int CellW = 120, CellH = 95;
         private const int DevPerRow = 3;
 
-        private const int SubGapX = 20, SubGapY = 20;
-        private const int SubCols = 2;                     // subnets per row inside outer frame
+        private const int SubGapX = 25, SubGapY = 20;
+        private const int SubCols = 3;                     // 3 subnet columns (row-wise layout)
 
         // ==================== data grouping ====================
 
@@ -158,13 +154,6 @@ namespace jVision.Server.Download
             var grouped = GroupBySubnet(boxes);
             var layout = Compute(grouped);
 
-            // Header text: aggregate subnet CIDRs for the outer frame + router label
-            var subnetLabels = grouped.Select(g => g.Subnet).ToList();
-            string outerTitle = subnetLabels.Count == 0
-                ? "Production Network"
-                : "Production Network — " + string.Join(" · ", subnetLabels);
-            string routerLabel = subnetLabels.Count == 0 ? "" : string.Join(", ", subnetLabels);
-
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
             sb.Append($"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{layout.CanvasW}\" height=\"{layout.CanvasH}\" viewBox=\"0 0 {layout.CanvasW} {layout.CanvasH}\" font-family=\"Arial, Helvetica, sans-serif\">\n");
@@ -174,24 +163,16 @@ namespace jVision.Server.Download
             // Attacker Network
             sb.Append(AttackerBlock(layout.AttackerX, AttackerTopY));
 
-            // Arrow attacker -> router
+            // Arrow attacker -> router (arrowhead at router end, centred)
             sb.Append(DownArrow(layout.CanvasW / 2, AttackerTopY + AttackerH + 10, RouterTopY - 8));
 
-            // Router
+            // Router — clean cylinder, no coloured diagonal shapes, no subnet label
             sb.Append(CiscoRouter(layout.RouterX, RouterTopY));
-            if (!string.IsNullOrEmpty(routerLabel))
-            {
-                sb.Append($"<text x=\"{layout.RouterX + RouterW + 20}\" y=\"{RouterTopY + RouterH / 2 + 5}\" font-size=\"14\" font-weight=\"700\" fill=\"#111\">{XmlEscape(routerLabel)}</text>\n");
-            }
 
-            // Arrow router -> outer frame
+            // Arrow router -> subnets (arrowhead at subnet end, centred)
             sb.Append(DownArrow(layout.CanvasW / 2, RouterTopY + RouterH + 20, layout.OuterFrameY - 8));
 
-            // Outer frame title (floats just above the frame)
-            sb.Append($"<text x=\"{layout.OuterFrameX}\" y=\"{layout.OuterFrameY - 6}\" font-size=\"15\" font-weight=\"700\" fill=\"#111\">{XmlEscape(outerTitle)}</text>\n");
-
-            // Outer frame rectangle (dashed)
-            sb.Append($"<rect x=\"{layout.OuterFrameX}\" y=\"{layout.OuterFrameY}\" width=\"{layout.OuterFrameW}\" height=\"{layout.OuterFrameH}\" fill=\"none\" stroke=\"#333\" stroke-width=\"1.4\" stroke-dasharray=\"4,3\"/>\n");
+            // No outer "Production Network" frame or label — subnets appear directly in rows.
 
             // Sub-environments
             for (int i = 0; i < grouped.Count; i++)
@@ -217,9 +198,14 @@ namespace jVision.Server.Download
         // ==================== SVG pieces ====================
 
         private static string Defs() => @"<defs>
-<marker id=""arrDown"" viewBox=""0 0 10 10"" refX=""5"" refY=""9"" markerWidth=""10"" markerHeight=""10"" orient=""auto"">
-  <path d=""M 0 0 L 10 0 L 5 10 z"" fill=""#111""/>
-</marker>
+  <!-- Right-pointing polygon in local coords.  With orient=""auto"" on a
+       vertical downward line the marker x-axis maps to screen-down, so this
+       becomes a correctly downward-pointing arrowhead.
+       refX=10, refY=5 places the TIP at the line endpoint. -->
+  <marker id=""arrDown"" viewBox=""0 0 10 10"" refX=""10"" refY=""5""
+          markerWidth=""10"" markerHeight=""10"" orient=""auto"">
+    <polygon points=""0 0, 10 5, 0 10"" fill=""#333""/>
+  </marker>
 </defs>
 ";
 
@@ -262,28 +248,15 @@ namespace jVision.Server.Download
             return sb.ToString();
         }
 
-        // Cisco cylinder router with 4 diagonal colored arrows.
+        // Cisco cylinder router — clean body only, no coloured diagonal arrow shapes.
         private static string CiscoRouter(int x, int y)
         {
             var sb = new StringBuilder();
             sb.Append($"<g transform=\"translate({x},{y})\">");
-            // TL green
-            sb.Append("<path d=\"M 22 22 L 2 2 L -8 12 L 10 30 Z\" fill=\"#2e9c47\"/>");
-            sb.Append("<path d=\"M 2 2 L -6 -4 L -2 -12 L 8 -6 Z\" fill=\"#2e9c47\"/>");
-            // TR yellow
-            sb.Append("<path d=\"M 78 22 L 98 2 L 108 12 L 90 30 Z\" fill=\"#f0a91d\"/>");
-            sb.Append("<path d=\"M 98 2 L 106 -4 L 102 -12 L 92 -6 Z\" fill=\"#f0a91d\"/>");
-            // BL blue
-            sb.Append("<path d=\"M 22 40 L 2 60 L -8 50 L 10 32 Z\" fill=\"#2261c4\"/>");
-            sb.Append("<path d=\"M 2 60 L -6 66 L -2 74 L 8 68 Z\" fill=\"#2261c4\"/>");
-            // BR red
-            sb.Append("<path d=\"M 78 40 L 98 60 L 108 50 L 90 32 Z\" fill=\"#c62727\"/>");
-            sb.Append("<path d=\"M 98 60 L 106 66 L 102 74 L 92 68 Z\" fill=\"#c62727\"/>");
-            // Cylinder body
+            sb.Append("<rect x=\"0\" y=\"16\" width=\"100\" height=\"28\" fill=\"#2ea3c9\"/>");
+            sb.Append("<ellipse cx=\"50\" cy=\"44\" rx=\"50\" ry=\"12\" fill=\"#1f80a3\"/>");
             sb.Append("<ellipse cx=\"50\" cy=\"16\" rx=\"50\" ry=\"12\" fill=\"#2ea3c9\"/>");
-            sb.Append("<rect x=\"0\" y=\"16\" width=\"100\" height=\"30\" fill=\"#2ea3c9\"/>");
-            sb.Append("<ellipse cx=\"50\" cy=\"46\" rx=\"50\" ry=\"12\" fill=\"#1f80a3\"/>");
-            sb.Append("<ellipse cx=\"50\" cy=\"16\" rx=\"50\" ry=\"12\" fill=\"none\" stroke=\"#9be3f5\" stroke-width=\"1\" opacity=\"0.7\"/>");
+            sb.Append("<ellipse cx=\"50\" cy=\"16\" rx=\"50\" ry=\"12\" fill=\"none\" stroke=\"#9be3f5\" stroke-width=\"1\" opacity=\"0.8\"/>");
             sb.Append("</g>\n");
             return sb.ToString();
         }
@@ -317,72 +290,63 @@ namespace jVision.Server.Download
             return sb.ToString();
         }
 
-        // A single device cell. cx = horizontal center of the cell; top = top y.
+        // A single device cell. cx = horizontal centre; top = top y.
+        // Shows OS-specific monitor icon + IP address only (no hostname notes).
         private static string DeviceCell(int cx, int top, Box b)
         {
             int ix = cx - IconW / 2;
-            int iy = top;
             var sb = new StringBuilder();
             sb.Append($"<g>");
             sb.Append(IsWindows(b)
-                ? WinTileMonitor(ix, iy)
-                : GlobeMonitor(ix, iy));
-
-            // IP bold on top, hostname underneath.
-            int labelY = iy + IconH + 26;                   // icon 52 + stand ~10 + gap
-            string hostname = string.IsNullOrEmpty(b.Hostname) ? "" : b.Hostname;
+                ? WinTileMonitor(ix, top)
+                : LinuxMonitor(ix, top));
+            int labelY = top + IconH + 18;
             sb.Append($"<text x=\"{cx}\" y=\"{labelY}\" text-anchor=\"middle\" font-size=\"12\" font-weight=\"700\" fill=\"#111\">{XmlEscape(b.Ip ?? "")}</text>");
-            if (!string.IsNullOrEmpty(hostname))
-            {
-                sb.Append($"<text x=\"{cx}\" y=\"{labelY + 14}\" text-anchor=\"middle\" font-size=\"11\" fill=\"#111\">{XmlEscape(Ellipsize(hostname, 26))}</text>");
-            }
             sb.Append($"</g>\n");
             return sb.ToString();
         }
 
         // ==================== device icons ====================
 
-        // Windows-tile monitor: cyan bezel + white screen + 4 blue tiles.
+        // Windows monitor: bezel + white screen + 4-colour Windows flag.
         private static string WinTileMonitor(int x, int y)
         {
             var sb = new StringBuilder();
             sb.Append($"<g transform=\"translate({x},{y})\">");
-            sb.Append("<rect x=\"0\" y=\"0\" width=\"60\" height=\"52\" rx=\"4\" fill=\"#e6f2fb\" stroke=\"#2261c4\" stroke-width=\"1.4\"/>");
-            sb.Append("<rect x=\"4\" y=\"4\" width=\"52\" height=\"44\" fill=\"#ffffff\" stroke=\"#2261c4\" stroke-width=\"1\"/>");
-            // 4 blue tiles with slight bottom skew (Win logo perspective)
-            sb.Append("<g transform=\"translate(16,10)\">");
-            sb.Append("<path d=\"M 0 2 L 12 0 L 12 12 L 0 13 Z\" fill=\"#2261c4\"/>");
-            sb.Append("<path d=\"M 14 0 L 28 -2 L 28 12 L 14 12 Z\" fill=\"#2261c4\"/>");
-            sb.Append("<path d=\"M 0 15 L 12 14 L 12 26 L 0 27 Z\" fill=\"#2261c4\"/>");
-            sb.Append("<path d=\"M 14 14 L 28 12 L 28 26 L 14 26 Z\" fill=\"#2261c4\"/>");
-            sb.Append("</g>");
+            sb.Append("<rect x=\"0\" y=\"0\" width=\"52\" height=\"45\" rx=\"3\" fill=\"#e8f4fb\" stroke=\"#2c7bb6\" stroke-width=\"1.4\"/>");
+            sb.Append("<rect x=\"3\" y=\"3\" width=\"46\" height=\"34\" fill=\"#ffffff\"/>");
+            // 4-colour Windows flag in screen
+            sb.Append("<path d=\"M 6 7 L 23 5 L 23 19 L 6 21 Z\" fill=\"#f25022\"/>");
+            sb.Append("<path d=\"M 25 5 L 46 3 L 46 19 L 25 19 Z\" fill=\"#7fba00\"/>");
+            sb.Append("<path d=\"M 6 23 L 23 21 L 23 35 L 6 37 Z\" fill=\"#00a4ef\"/>");
+            sb.Append("<path d=\"M 25 21 L 46 19 L 46 35 L 25 35 Z\" fill=\"#ffb900\"/>");
             // Stand
-            sb.Append("<rect x=\"26\" y=\"52\" width=\"8\" height=\"6\" fill=\"#2261c4\"/>");
-            sb.Append("<rect x=\"16\" y=\"58\" width=\"28\" height=\"4\" rx=\"1\" fill=\"#2261c4\"/>");
+            sb.Append("<rect x=\"22\" y=\"45\" width=\"8\" height=\"5\" fill=\"#2c7bb6\"/>");
+            sb.Append("<rect x=\"14\" y=\"50\" width=\"24\" height=\"3\" rx=\"1\" fill=\"#2c7bb6\"/>");
             sb.Append("</g>");
             return sb.ToString();
         }
 
-        // Globe monitor: cyan bezel + white screen + blue globe glyph with cursor.
-        private static string GlobeMonitor(int x, int y)
+        // Linux monitor: bezel + white screen + simplified Tux penguin.
+        private static string LinuxMonitor(int x, int y)
         {
             var sb = new StringBuilder();
             sb.Append($"<g transform=\"translate({x},{y})\">");
-            sb.Append("<rect x=\"0\" y=\"0\" width=\"60\" height=\"52\" rx=\"4\" fill=\"#e6f2fb\" stroke=\"#2261c4\" stroke-width=\"1.4\"/>");
-            sb.Append("<rect x=\"4\" y=\"4\" width=\"52\" height=\"44\" fill=\"#ffffff\" stroke=\"#2261c4\" stroke-width=\"1\"/>");
-            // Globe (meridians + equator + oval hints)
-            sb.Append("<g transform=\"translate(30,26)\" stroke=\"#2261c4\" stroke-width=\"1.6\" fill=\"none\">");
-            sb.Append("<circle r=\"14\"/>");
-            sb.Append("<line x1=\"-14\" y1=\"0\" x2=\"14\" y2=\"0\"/>");
-            sb.Append("<line x1=\"0\" y1=\"-14\" x2=\"0\" y2=\"14\"/>");
-            sb.Append("<ellipse cx=\"0\" cy=\"0\" rx=\"7\" ry=\"14\"/>");
-            sb.Append("<ellipse cx=\"0\" cy=\"0\" rx=\"14\" ry=\"6\"/>");
-            sb.Append("</g>");
-            // Small cursor arrow overlay
-            sb.Append("<path d=\"M 40 30 L 46 34 L 43 36 L 46 42 L 43 43 L 40 37 L 37 40 Z\" fill=\"#2261c4\"/>");
+            // Bezel + screen
+            sb.Append("<rect x=\"0\" y=\"0\" width=\"52\" height=\"45\" rx=\"3\" fill=\"#e8f4fb\" stroke=\"#2c7bb6\" stroke-width=\"1.4\"/>");
+            sb.Append("<rect x=\"3\" y=\"3\" width=\"46\" height=\"34\" fill=\"#ffffff\"/>");
+            // Tux penguin centred in screen (screen centre: 26, 20)
+            sb.Append("<ellipse cx=\"26\" cy=\"26\" rx=\"9\" ry=\"12\" fill=\"#111\"/>"); // body
+            sb.Append("<ellipse cx=\"26\" cy=\"28\" rx=\"5\" ry=\"8\" fill=\"#f5f5f5\"/>"); // belly
+            sb.Append("<ellipse cx=\"26\" cy=\"11\" rx=\"7\" ry=\"6\" fill=\"#111\"/>"); // head
+            sb.Append("<circle cx=\"22\" cy=\"10\" r=\"2\" fill=\"white\"/>"); // L eye white
+            sb.Append("<circle cx=\"30\" cy=\"10\" r=\"2\" fill=\"white\"/>"); // R eye white
+            sb.Append("<circle cx=\"22\" cy=\"10\" r=\"1\" fill=\"#222\"/>"); // L pupil
+            sb.Append("<circle cx=\"30\" cy=\"10\" r=\"1\" fill=\"#222\"/>"); // R pupil
+            sb.Append("<path d=\"M 23 15 L 29 15 L 26 19 Z\" fill=\"#e8a000\"/>"); // beak
             // Stand
-            sb.Append("<rect x=\"26\" y=\"52\" width=\"8\" height=\"6\" fill=\"#2261c4\"/>");
-            sb.Append("<rect x=\"16\" y=\"58\" width=\"28\" height=\"4\" rx=\"1\" fill=\"#2261c4\"/>");
+            sb.Append("<rect x=\"22\" y=\"45\" width=\"8\" height=\"5\" fill=\"#2c7bb6\"/>");
+            sb.Append("<rect x=\"14\" y=\"50\" width=\"24\" height=\"3\" rx=\"1\" fill=\"#2c7bb6\"/>");
             sb.Append("</g>");
             return sb.ToString();
         }
@@ -448,18 +412,8 @@ namespace jVision.Server.Download
                     "shape=mxgraph.cisco.routers.router;html=1;fillColor=#2ea3c9;strokeColor=#1f80a3;fontColor=#111111;fontStyle=1;labelPosition=right;verticalLabelPosition=middle;align=left;verticalAlign=middle;",
                     layout.RouterX, RouterTopY, RouterW, RouterH);
 
-                // Edges attacker -> router -> outer
+                // Edges attacker -> router -> subnet area
                 DrawioEdge(w, "e1", "1", "attacker", "router", downArrow: true);
-
-                // Outer frame (Production Network)
-                var subnetLabels = grouped.Select(g => g.Subnet).ToList();
-                string outerTitle = subnetLabels.Count == 0
-                    ? "Production Network"
-                    : "Production Network — " + string.Join(" · ", subnetLabels);
-                DrawioVertex(w, "outer", "1", outerTitle,
-                    "swimlane;html=1;fontStyle=1;startSize=28;fillColor=none;strokeColor=#333333;strokeWidth=1.4;dashed=1;dashPattern=4 3;fontColor=#111111;fontSize=14;verticalAlign=top;align=left;spacingLeft=12;",
-                    layout.OuterFrameX, layout.OuterFrameY, layout.OuterFrameW, layout.OuterFrameH);
-                DrawioEdge(w, "e2", "1", "router", "outer", downArrow: true);
 
                 // Sub-environments and their hosts
                 for (int i = 0; i < grouped.Count; i++)

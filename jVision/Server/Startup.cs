@@ -12,6 +12,7 @@ using jVision.Server.Models;
 using Microsoft.AspNetCore.Identity;
 using System.Threading.Tasks;
 using jVision.Server.Hubs;
+using jVision.Server.Middleware;
 
 namespace jVision.Server
 {
@@ -78,6 +79,9 @@ namespace jVision.Server
             app.UseRouting();
             app.UseAuthentication();
             app.UseAuthorization();
+            // After UseAuthentication so User.Identity is populated; static
+            // files are already served above and never reach it.
+            app.UseMiddleware<OperatorIpMiddleware>();
             app.UseEndpoints(endpoints =>
             {
                 endpoints.MapRazorPages();

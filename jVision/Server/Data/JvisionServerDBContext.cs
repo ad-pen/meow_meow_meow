@@ -25,5 +25,18 @@ namespace jVision.Server.Data
         public DbSet<ScanUpload> ScanUpload { get; set; }
 
         public DbSet<UploadedScanHost> UploadedScanHost { get; set; }
+
+        public DbSet<TeamIp> TeamIp { get; set; }
+
+        protected override void OnModelCreating(ModelBuilder builder)
+        {
+            base.OnModelCreating(builder);
+
+            // One row per operator+address pair; the recorder relies on this to
+            // upsert rather than pile up a row per request.
+            builder.Entity<TeamIp>()
+                .HasIndex(t => new { t.Operator, t.Ip })
+                .IsUnique();
+        }
     }
 }

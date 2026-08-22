@@ -385,6 +385,34 @@ namespace jVision.Server.Migrations
                     b.ToTable("ScanUpload");
                 });
 
+            modelBuilder.Entity("jVision.Shared.Models.TeamIp", b =>
+                {
+                    b.Property<int>("TeamIpId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("FirstSeen")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Ip")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("LastSeen")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Operator")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("TeamIpId");
+
+                    b.HasIndex("Operator", "Ip")
+                        .IsUnique();
+
+                    b.ToTable("TeamIp");
+                });
+
             modelBuilder.Entity("jVision.Shared.Models.UploadedScanHost", b =>
                 {
                     b.Property<int>("UploadedScanHostId")
