@@ -30,12 +30,16 @@
 #     token, access_token, refresh_token, api_key, apikey, bearer,
 #     bare JWTs anywhere in body (eyJ...)
 #   Prefix-keep first 2 chars (identifying, needed for client correlation):
-#     session, sessionid, PHPSESSID, JSESSIONID, hash, hashes, nthash,
-#     lmhash, aesKey
+#     session, sessionid, PHPSESSID, JSESSIONID
 #   NO redaction:
-#     usernames -- kept as-is so client-side incident response can correlate
-#     which account was touched. If this log ever needs to leave the
-#     engagement, sanitise usernames externally before handing it over.
+#     usernames -- kept as-is, deliberately. The log exists so the client can
+#     answer "which account touched this at time T"; a masked username defeats
+#     the only question it is there to answer. Secrets must never be in the
+#     file, identities are the point of the file.
+#
+# Hashes and Kerberos tickets are FULLY redacted (they were prefix-kept before):
+# an NTLM hash is a credential outright -- pass-the-hash needs nothing else --
+# so keeping any of it is keeping the secret.
 
 from __future__ import print_function
 
@@ -65,7 +69,8 @@ BODY_METHODS_IF_NONEMPTY = set(["DELETE"])
 _FULL_KEYS    = r"password|passwd|passphrase|pwd|secret"
 _TOKEN_KEYS   = r"token|access_token|refresh_token|api_key|apikey|bearer"
 _SESSION_KEYS = r"session|sessionid|phpsessid|jsessionid"
-_HASH_KEYS    = r"hash(?:es)?|nthash(?:es)?|lmhash|aeskey"
+_HASH_KEYS    = r"hash(?:es)?|nthash(?:es)?|lmhash|nthashes|aeskey|ntlm"
+_TICKET_KEYS  = r"ticket|krbcred|kirbi|ccache|tgt|tgs"
 
 # key = value  in URL query, form body, JS-object-ish, config-file-ish text.
 # Value forms recognized: "double-quoted"  |  'single-quoted'  |  bareword-no-ws.
@@ -75,12 +80,14 @@ _URL_FULL    = re.compile(r"(?i)\b(" + _FULL_KEYS    + r")\s*=\s*(" + _VAL + r")
 _URL_TOKEN   = re.compile(r"(?i)\b(" + _TOKEN_KEYS   + r")\s*=\s*(" + _VAL + r")")
 _URL_SESSION = re.compile(r"(?i)\b(" + _SESSION_KEYS + r")\s*=\s*(" + _VAL + r")")
 _URL_HASH    = re.compile(r"(?i)\b(" + _HASH_KEYS    + r")\s*=\s*(" + _VAL + r")")
+_URL_TICKET  = re.compile(r"(?i)\b(" + _TICKET_KEYS  + r")\s*=\s*(" + _VAL + r")")
 
 # JSON:  "key":"value"   (best-effort -- doesn't handle escaped quotes in value)
 _JSON_FULL    = re.compile(r'(?i)("(?:' + _FULL_KEYS    + r')"\s*:\s*)"([^"]*)"')
 _JSON_TOKEN   = re.compile(r'(?i)("(?:' + _TOKEN_KEYS   + r')"\s*:\s*)"([^"]*)"')
 _JSON_SESSION = re.compile(r'(?i)("(?:' + _SESSION_KEYS + r')"\s*:\s*)"([^"]*)"')
 _JSON_HASH    = re.compile(r'(?i)("(?:' + _HASH_KEYS    + r')"\s*:\s*)"([^"]*)"')
+_JSON_TICKET  = re.compile(r'(?i)("(?:' + _TICKET_KEYS  + r')"\s*:\s*)"([^"]*)"')
 
 # Basic-auth user:pass@host embedded in a URL: keep the username, hide the pass
 _URL_BASIC = re.compile(r"://([^:/@\s]+):([^@\s]+)@")
@@ -107,7 +114,9 @@ def _redact_url(url):
     url = _URL_FULL.sub(   lambda m: m.group(1) + "=[REDACTED]",                                    url)
     url = _URL_TOKEN.sub(  lambda m: m.group(1) + "=" + _keep_prefix(3, _unquote(m.group(2))),      url)
     url = _URL_SESSION.sub(lambda m: m.group(1) + "=" + _keep_prefix(2, _unquote(m.group(2))),      url)
-    url = _URL_HASH.sub(   lambda m: m.group(1) + "=" + _keep_prefix(2, _unquote(m.group(2))),      url)
+    url = _URL_HASH.sub(   lambda m: m.group(1) + "=[REDACTED]",                                    url)
+    url = _URL_TICKET.sub( lambda m: m.group(1) + "=[REDACTED]",                                    url)
+    # username kept, password dropped
     url = _URL_BASIC.sub(  lambda m: "://" + m.group(1) + ":[REDACTED]@",                           url)
     return url
 
@@ -117,12 +126,14 @@ def _redact_body(body):
     body = _URL_FULL.sub(   lambda m: m.group(1) + "=[REDACTED]",                                     body)
     body = _URL_TOKEN.sub(  lambda m: m.group(1) + "=" + _keep_prefix(3, _unquote(m.group(2))),       body)
     body = _URL_SESSION.sub(lambda m: m.group(1) + "=" + _keep_prefix(2, _unquote(m.group(2))),       body)
-    body = _URL_HASH.sub(   lambda m: m.group(1) + "=" + _keep_prefix(2, _unquote(m.group(2))),       body)
+    body = _URL_HASH.sub(   lambda m: m.group(1) + "=[REDACTED]",                                      body)
+    body = _URL_TICKET.sub( lambda m: m.group(1) + "=[REDACTED]",                                      body)
     # JSON forms
     body = _JSON_FULL.sub(   lambda m: m.group(1) + '"[REDACTED]"',                          body)
     body = _JSON_TOKEN.sub(  lambda m: m.group(1) + '"' + _keep_prefix(3, m.group(2)) + '"', body)
     body = _JSON_SESSION.sub(lambda m: m.group(1) + '"' + _keep_prefix(2, m.group(2)) + '"', body)
-    body = _JSON_HASH.sub(   lambda m: m.group(1) + '"' + _keep_prefix(2, m.group(2)) + '"', body)
+    body = _JSON_HASH.sub(   lambda m: m.group(1) + '"[REDACTED]"',                          body)
+    body = _JSON_TICKET.sub( lambda m: m.group(1) + '"[REDACTED]"',                          body)
     # bare JWTs anywhere (unlabeled Bearer tokens embedded in payloads, etc.)
     body = _BARE_JWT.sub(lambda m: _keep_prefix(3, m.group(0)), body)
     return body

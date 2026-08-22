@@ -82,7 +82,13 @@ else
     exit 1
 fi
 
-print_status "Installing basic packages (python3, pip, nmap)..."
+# docker.io + docker-compose live HERE, not only in all.sh, so the jVision server
+# can be brought up as soon as start.sh finishes - independently of all.sh.
+# Why it can't just be done by hand later: all.sh holds the dpkg/apt frontend lock
+# for its whole apt phase, so a second terminal running 'apt install docker.io'
+# fails with "Could not get lock" until that phase ends. all.sh still lists both
+# packages; its apt_install does a dpkg -s check first, so they are a no-op there.
+print_status "Installing basic packages (python3, pip, nmap, docker)..."
 if sudo apt install -y \
     python3 \
     python3-pip \
@@ -90,7 +96,9 @@ if sudo apt install -y \
     nmap \
     git \
     curl \
-    wget; then
+    wget \
+    docker.io \
+    docker-compose; then
     print_success "Basic packages installed"
 else
     print_error "Failed to install basic packages"
@@ -107,6 +115,27 @@ for tool in python3 pip3 nmap git curl wget; do
         exit 1
     fi
 done
+
+# Docker post-install, kept non-fatal: a box where docker.io failed should still
+# finish setup (all.sh retries it). all.sh does this same usermod - both are no-ops
+# on the second run.
+if command -v docker &> /dev/null; then
+    print_status "Configuring Docker for jVision..."
+    if sudo systemctl enable docker --now; then
+        print_success "Docker daemon enabled and running"
+    else
+        print_warning "Could not start the Docker daemon (non-critical)"
+    fi
+    # "$(id -un)" not "$USER": with 'set -u' an unset USER aborts the script.
+    if sudo usermod -aG docker "$(id -un)"; then
+        print_success "User added to docker group (takes effect after re-login)"
+    else
+        print_warning "Failed to add user to docker group (non-critical)"
+    fi
+    print_status "Until you re-login, run jVision with: sudo docker-compose ..."
+else
+    print_warning "docker not present - jVision server cannot start until all.sh installs it"
+fi
 
 print_status "Upgrading pip and setuptools..."
 if python3 -m pip install --upgrade pip setuptools --break-system-packages; then
@@ -211,13 +240,23 @@ echo "    burp_logging.sh above."
 echo
 echo -e "${BLUE}[4] Install the full tool suite${NC} (heavy; run once per box)"
 echo "    bash \"$SCRIPT_DIR/all.sh\""
+echo "    Do steps [1]-[3] FIRST: all.sh re-checks them and asks before proceeding."
+echo "    Docker is already installed, so [6] can run in a SECOND terminal while"
+echo "    this one is still churning through all.sh."
 
 echo
 echo -e "${BLUE}[5] AD-side tools${NC} (run before AD work)"
 echo "    bash \"$SCRIPT_DIR/ad.sh\""
 
 echo
-echo -e "${BLUE}[6] AT ENGAGEMENT START -- push your logs to jVision${NC}"
+echo -e "${BLUE}[6] Bring up the jVision server${NC} (safe to run alongside all.sh)"
+echo "    cd \"$SCRIPT_DIR/jVision\" && sudo docker-compose up -d --build"
+echo "    Serves on port 7777. Drop the 'sudo' once you have re-logged in."
+echo "    Check it:  sudo docker-compose ps   |   logs: sudo docker-compose logs -f"
+echo "    ('docker compose' with a space also works if the CLI plugin is registered.)"
+
+echo
+echo -e "${BLUE}[7] AT ENGAGEMENT START -- push your logs to jVision${NC}"
 echo "    bash \"$SCRIPT_DIR/jvis_logsync.sh\" start -i <jvision-ip> -u <jvis-user>"
 echo "    Control commands:"
 echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" status"
@@ -226,7 +265,7 @@ echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" stop"
 echo "    (Prompts for your jVision password; JVIS_PASS env var also works.)"
 
 echo
-echo -e "${BLUE}[7] Run scans via the jVision client${NC} (from the jVision repo)"
+echo -e "${BLUE}[8] Run scans via the jVision client${NC} (from the jVision repo)"
 echo "    sudo python3 jvisionclient.py -i <jvision-ip> -p 7777 -s <target-subnet>"
 echo "        -n         only run the heavy scan (skip the fast pass)"
 echo "        -u         also run UDP top-50 (SNMP/DNS/NetBIOS etc.)"

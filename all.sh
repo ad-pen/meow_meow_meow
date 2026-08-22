@@ -2,90 +2,23 @@
 
 set -u
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
 LOG_FILE="$HOME/all_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-print_status() {
-    echo -e "${BLUE}[*]${NC} $1"
-}
+# Resolve our own location so we can source lib.sh and name sibling scripts,
+# regardless of the cwd this was launched from.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-print_success() {
-    echo -e "${GREEN}[+]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[-]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
-}
-
-fin_msg(){
-    echo -e "\n${GREEN}#################################${NC}"
-    echo -e "${GREEN}  $1 DONE${NC}"
-    echo -e "${GREEN}#################################${NC}\n"
-}
-
-# ---------------------------------------------------------------------------
-# Resilient / idempotent install helpers: make re-runs fast and stop one bad
-# package/download from silently sinking a whole batch.
-# ---------------------------------------------------------------------------
-APT_FAILED=()   # apt packages that failed, reported at the end
-
-# Install apt packages ONE AT A TIME so a single failure is logged and skipped
-# instead of aborting the whole 'apt install a b c' transaction. Already-present
-# packages are detected with dpkg and skipped without hitting the network.
-apt_install() {
-    local pkg
-    for pkg in "$@"; do
-        if dpkg -s "$pkg" &>/dev/null; then
-            print_success "$pkg already installed"
-        elif sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"; then
-            # 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
-            # DEBIAN_FRONTEND, so without this, debconf prompts (e.g. docker.io's
-            # "Remove all Docker data?") appear and fail non-interactive installs.
-            print_success "$pkg installed"
-        else
-            print_warning "$pkg FAILED to install"
-            APT_FAILED+=("$pkg")
-        fi
-    done
-}
-
-# Idempotent pip install: skip entirely if the module already imports, so re-runs
-# and cross-script duplicates don't re-resolve/re-download. $1=import name, rest=pip specs.
-pip_ensure() {
-    local mod=$1; shift
-    if python3 -c "import $mod" &>/dev/null; then
-        print_success "python: $mod already present (skip)"
-    elif pip install "$@" --break-system-packages; then
-        print_success "python: $mod installed"
-    else
-        print_warning "python: $mod FAILED to install"
-    fi
-}
-
-# Idempotent download with retries: skip if the destination already exists.
-# $1=url  $2=dest path  $3=optional 'sudo' to write privileged paths.
-fetch() {
-    local url=$1 dest=$2 pre=${3:-}
-    if [ -s "$dest" ]; then
-        print_success "$(basename "$dest") already present (skip)"
-        return 0
-    fi
-    if $pre curl -fSL --retry 3 --connect-timeout 15 "$url" -o "$dest"; then
-        return 0
-    fi
-    print_warning "download failed: $(basename "$dest")"
-    return 1
-}
+# Colours, print_*, fin_msg, apt_install, pip_ensure, the pin manifest and
+# fetch_pinned/clone_pinned/go_install all live in lib.sh. They used to be
+# copy-pasted into this file and ad.sh, so a fix to one copy never reached the
+# other and nothing reported the divergence.
+if [ ! -f "$SCRIPT_DIR/lib.sh" ]; then
+    echo "[-] lib.sh not found next to all.sh - incomplete clone? Cannot continue."
+    exit 1
+fi
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
 
 echo -e "${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
@@ -93,6 +26,114 @@ echo "║     PSUT VAPT Team - Full Tool Installation           ║"
 echo "║     Installing comprehensive pentesting suite...      ║"
 echo "╚═══════════════════════════════════════════════════════╝"
 echo -e "${NC}"
+
+# ---------------------------------------------------------------------------
+# PREFLIGHT
+# start.sh ends by PRINTING a NEXT STEPS list, but nothing ever enforced it, so
+# all.sh could happily run on a box where command logging was never activated -
+# and every tool installed from that shell would be missing from the engagement
+# log we hand the client. Check those manual steps here, show exactly what is
+# missing and how to fix it, then make the operator decide.
+# Default answer is NO. Set SKIP_PREFLIGHT=1 to bypass entirely.
+# ---------------------------------------------------------------------------
+PREFLIGHT_FAIL=0
+
+pf_ok()   { print_success "  $1"; return 0; }
+pf_bad()  { print_error   "  $1"; [ -n "${2:-}" ] && echo "         fix: $2"
+            PREFLIGHT_FAIL=$((PREFLIGHT_FAIL+1)); return 0; }
+pf_note() { print_warning "  $1"; [ -n "${2:-}" ] && echo "         fix: $2"; return 0; }
+
+preflight() {
+    print_status "Preflight - checking the manual steps start.sh asked for:"
+    echo
+
+    # [0] did start.sh run at all
+    if [ -f "$HOME/start_install.log" ]; then
+        pf_ok "start.sh has been run on this box"
+    else
+        pf_bad "start.sh has NOT been run on this box (no ~/start_install.log)" \
+               "bash \"$SCRIPT_DIR/start.sh\""
+    fi
+
+    # [1] command logging: installed in the rc files, AND actually loaded.
+    # A loaded hook is the only thing that proves it: the log file only grows
+    # once a shell has sourced the block, so a non-empty log == activated.
+    if grep -q "cptc engagement logging" "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null; then
+        pf_ok "command logging block installed in ~/.zshrc / ~/.bashrc"
+        if [ -s "$HOME/.zsh_history_readable" ]; then
+            pf_ok "command logging is LIVE ($(wc -l < "$HOME/.zsh_history_readable") lines so far)"
+        else
+            pf_bad "command logging installed but NOTHING logged yet - hook not loaded" \
+                   "source ~/.zshrc   (or ~/.bashrc, or open a fresh shell) then re-run this"
+        fi
+    else
+        pf_bad "command logging NOT configured" \
+               "bash \"$SCRIPT_DIR/command_logging.sh\"  then  source ~/.zshrc"
+    fi
+
+    # [2] uniform terminal - both emulators, so screenshots match across the team
+    local uni=0
+    grep -q "^colorScheme=CPTC" "$HOME/.config/qterminal.org/qterminal.ini" 2>/dev/null && uni=$((uni+1))
+    grep -q "^ColorPalette=" "$HOME/.config/xfce4/terminal/terminalrc" 2>/dev/null && uni=$((uni+1))
+    if [ "$uni" -eq 2 ]; then
+        pf_ok "uniform terminal applied (qterminal + xfce4-terminal)"
+    elif [ "$uni" -eq 1 ]; then
+        pf_note "uniform terminal applied to only ONE emulator - screenshots may not match" \
+                "bash \"$SCRIPT_DIR/terminal_uniform.sh\""
+    else
+        pf_bad "uniform terminal NOT applied" "bash \"$SCRIPT_DIR/terminal_uniform.sh\""
+    fi
+
+    # [3] Burp logging: extension staged AND registered for auto-load
+    if [ -f "$HOME/.BurpSuite/burp_logger.py" ] && [ -s "$HOME/.BurpSuite/jython-standalone.jar" ]; then
+        if grep -q "burp_logger.py" "$HOME"/.BurpSuite/UserConfig*.json 2>/dev/null; then
+            pf_ok "Burp logger staged and registered for auto-load"
+        else
+            pf_bad "Burp logger staged but NOT registered - Burp will not load it" \
+                   "bash \"$SCRIPT_DIR/burp_logging.sh\"  (with Burp CLOSED)"
+        fi
+        # Soft: proves it actually fired. Requires having opened Burp once, so it
+        # is a reminder, not a blocker.
+        if [ -s "$HOME/.burp_history_readable" ]; then
+            pf_ok "Burp logger has written traffic (verified working)"
+        else
+            pf_note "Burp logger has never written a line - not yet verified" \
+                    "start Burp, send one Repeater request, check ~/.burp_history_readable"
+        fi
+    else
+        pf_bad "Burp logging NOT configured" "bash \"$SCRIPT_DIR/burp_logging.sh\""
+    fi
+}
+
+if [ "${SKIP_PREFLIGHT:-0}" = "1" ]; then
+    print_warning "SKIP_PREFLIGHT=1 - preflight checks bypassed"
+else
+    preflight
+    echo
+    if [ "$PREFLIGHT_FAIL" -eq 0 ]; then
+        print_success "Preflight clean - every manual step from start.sh is done."
+    else
+        print_warning "$PREFLIGHT_FAIL preflight check(s) FAILED (see above)."
+        print_warning "all.sh installs tools - it does NOT fix any of these."
+        print_warning "Anything you run before command logging is live is absent from the"
+        print_warning "engagement log, and that log is what answers 'prove what you did at time T'."
+    fi
+    echo
+    if [ -t 0 ]; then
+        read -r -p "Proceed with all.sh? [N/y]: " -n 1 REPLY; echo
+        if [[ ! ${REPLY:-} =~ ^[Yy]$ ]]; then
+            print_error "Aborted. Fix the items above, then: bash \"$SCRIPT_DIR/all.sh\""
+            exit 1
+        fi
+        print_status "Proceeding..."
+    elif [ "$PREFLIGHT_FAIL" -eq 0 ]; then
+        print_status "No TTY - preflight is clean, continuing without a prompt."
+    else
+        print_error "No TTY and $PREFLIGHT_FAIL preflight failure(s) - refusing to continue."
+        print_error "Re-run interactively, or override with: SKIP_PREFLIGHT=1 bash \"$SCRIPT_DIR/all.sh\""
+        exit 1
+    fi
+fi
 
 # NOTE: shell-history growth + command logging moved to command_logging.sh, which
 # start.sh runs. Do not re-add inline HISTSIZE/preexec lines here - command_logging.sh
@@ -114,7 +155,7 @@ fi
 
 if [ -d "$HOME/dropzone" ]; then
     print_warning "Dropzone directory exists, maybe you ran this before?"
-    # Re-running is the NORMAL case: apt_install / pip_ensure / fetch / go_install are
+    # Re-running is the NORMAL case: apt_install / pip_ensure / fetch_pinned / go_install are
     # all idempotent and skip completed work. Only prompt if a human is actually there;
     # without a TTY, default to continuing instead of aborting. (Previously any
     # non-interactive re-run died here with "Installation cancelled by user".)
@@ -163,11 +204,11 @@ apt_install \
     apt-transport-https libssl-dev mc seclists curl golang gobuster nbtscan \
     onesixtyone oscanner smbclient smbmap smtp-user-enum snmp sslscan sipvicious \
     tnscmd10g whatweb hashcat feroxbuster dnsrecon redis-tools git \
-    wget aircrack-ng set sqlmap hydra docker.io docker-compose openjdk-11-jdk john awscli \
+    wget aircrack-ng set hydra docker.io docker-compose openjdk-11-jdk john awscli \
     sshuttle ffuf burpsuite python3-venv nuclei dirsearch flameshot scrot \
     maim cyberchef enum4linux nikto wfuzz steghide binwalk exiftool \
     netcat-traditional socat proxychains4 masscan metasploit-framework responder \
-    crackmapexec netexec zaproxy wireshark tcpdump tmux screen remmina terminator
+    netexec zaproxy wireshark tcpdump tmux screen remmina terminator
 # Notes on three entries above:
 #  * docker-compose      - Kali packages Compose v2 (2.40.3-3). This replaces an 8-line
 #                          curl of a ~49 MB binary from GitHub into /usr/local/bin, i.e.
@@ -175,9 +216,10 @@ apt_install \
 #  * python3-venv        - was pinned to python3.13-venv. That package exists today and
 #                          Kali's default python3 IS 3.13, so the pin was not broken - but
 #                          the metapackage tracks the default and survives a version bump.
-#  * crackmapexec+netexec- cme is still in Kali (5.4.0) so it is kept, but it is the
-#                          deprecated tool. netexec (1.5.1) was only ever installed by
-#                          ad.sh, so web/cloud operators who never run ad.sh had no nxc.
+#  * netexec             - crackmapexec was DROPPED: cme is the deprecated tool and nxc
+#                          supersedes it entirely. netexec (1.5.1) was only ever installed
+#                          by ad.sh, so web/cloud operators who never run ad.sh had no nxc;
+#                          installing it here is what makes dropping cme safe.
 
 # --- Reporting pipeline dependencies ---------------------------------------
 # The report builder (zozo) imports docx, fitz, PIL and pytesseract, and now reads an
@@ -231,29 +273,31 @@ mkdir -p ~/dropzone/privesc
 cd ~/dropzone
 
 print_status "Downloading privilege escalation scripts..."
-fetch https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh ~/dropzone/privesc/linpeas.sh
-fetch https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/Privesc/PowerUp.ps1 ~/dropzone/privesc/PowerUp.ps1
-fetch https://github.com/peass-ng/PEASS-ng/releases/download/20241011-2e37ba11/winPEASx64.exe ~/dropzone/privesc/winpeas.exe
-fetch https://raw.githubusercontent.com/enjoiz/Privesc/refs/heads/master/privesc.ps1 ~/dropzone/privesc/privesc.ps1
-fetch https://github.com/itm4n/PrivescCheck/releases/latest/download/PrivescCheck.ps1 ~/dropzone/privesc/PrivescCheck.ps1
+# URLs, versions and expected hashes now live in lib.sh's pin manifest, so the
+# same artifact cannot be fetched from two different URLs by two scripts.
+fetch_pinned linpeas          ~/dropzone/privesc/linpeas.sh
+fetch_pinned powerup          ~/dropzone/privesc/PowerUp.ps1
+fetch_pinned winpeas          ~/dropzone/privesc/winpeas.exe
+fetch_pinned privesc_ps1      ~/dropzone/privesc/privesc.ps1
+fetch_pinned privesccheck     ~/dropzone/privesc/PrivescCheck.ps1
 chmod +x ~/dropzone/privesc/linpeas.sh 2>/dev/null
 fin_msg 'Privesc Scripts'
 
 print_status "Downloading pspy64..."
-if fetch https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64 ~/dropzone/pspy64; then
+if fetch_pinned pspy64 ~/dropzone/pspy64; then
     chmod +x ~/dropzone/pspy64
     fin_msg 'pspy64'
 fi
 
 print_status "Downloading username-anarchy..."
-if fetch https://raw.githubusercontent.com/urbanadventurer/username-anarchy/refs/heads/master/username-anarchy ~/dropzone/username-anarchy; then
+if fetch_pinned username_anarchy ~/dropzone/username-anarchy; then
     chmod +x ~/dropzone/username-anarchy
 fi
 
 print_status "Downloading upshell (TTY upgrade helper)..."
 if [ -f /usr/local/bin/upshell ]; then
     print_success "upshell already installed (skip)"
-elif fetch https://raw.githubusercontent.com/brightio/penelope/main/extras/manual_tty_upgrade.sh ~/dropzone/upshell; then
+elif fetch_pinned upshell ~/dropzone/upshell; then
     sudo cp ~/dropzone/upshell /usr/local/bin/upshell && sudo chmod +x /usr/local/bin/upshell
     print_success "upshell installed to /usr/local/bin/upshell"
     fin_msg 'upshell'
@@ -264,13 +308,14 @@ print_status "Downloading chisel..."
 # tarball - the old .tar.gz URL 404'd, so chisel never installed. Gunzip, don't untar.
 if command -v chisel &>/dev/null; then
     print_success "chisel already installed: $(chisel --version 2>&1)"
-elif wget -q --tries=3 --timeout=30 https://github.com/jpillora/chisel/releases/download/v1.10.1/chisel_1.10.1_linux_amd64.gz -O chisel.gz && \
-     gunzip -f chisel.gz && chmod +x chisel && sudo mv chisel /usr/local/bin/chisel; then
+elif fetch_pinned chisel ~/dropzone/chisel.gz && \
+     gunzip -f ~/dropzone/chisel.gz && chmod +x ~/dropzone/chisel && \
+     sudo mv ~/dropzone/chisel /usr/local/bin/chisel; then
     print_success "chisel installed: $(chisel --version 2>&1)"
     fin_msg 'chisel'
 else
     print_warning "chisel installation failed"
-    rm -f chisel.gz chisel
+    rm -f ~/dropzone/chisel.gz ~/dropzone/chisel
 fi
 
 
@@ -284,8 +329,13 @@ fin_msg 'Cloud Security Tools'
 
 print_status "Setting up wordlists..."
 if [ ! -d "/usr/share/wordlists/kali-wordlists" ]; then
+    # needs root to write /usr/share, so this one stays a direct clone; the
+    # commit is still recorded so boxes can be compared.
     if sudo git clone https://github.com/00xBAD/kali-wordlists.git /usr/share/wordlists/kali-wordlists; then
         print_success "Kali wordlists cloned"
+        record_pin kali_wordlists HEAD \
+            "$(git -C /usr/share/wordlists/kali-wordlists rev-parse HEAD 2>/dev/null || echo -)"
+        UNPINNED+=("kali_wordlists")
     else
         print_warning "Kali wordlists clone failed"
     fi
@@ -318,51 +368,47 @@ fi
 
 print_status "Cloning nuclei templates..."
 cd ~/dropzone
-if [ ! -d "nuclei-templates" ]; then
-    if git clone https://github.com/projectdiscovery/nuclei-templates.git; then
-        templates_count=$(find nuclei-templates -name "*.yaml" | wc -l)
-        print_success "Nuclei templates cloned ($templates_count templates)"
-        fin_msg 'Nuclei Templates'
-    else
-        print_warning "Nuclei templates clone failed"
-    fi
-else
-    print_success "Nuclei templates already exist"
+if clone_pinned nuclei-templates https://github.com/projectdiscovery/nuclei-templates.git \
+        "$HOME/dropzone/nuclei-templates"; then
+    templates_count=$(find "$HOME/dropzone/nuclei-templates" -name "*.yaml" | wc -l)
+    print_success "Nuclei templates: $templates_count templates"
+    fin_msg 'Nuclei Templates'
 fi
 
 
-print_status "Cloning SSTImap"
+print_status "Cloning jwt_tool (JWT tampering/cracking)..."
 cd ~/dropzone
-if [ ! -d "SSTImap" ]; then
-    if git clone https://github.com/vladko312/SSTImap.git; then
-        print_success "SSTImap cloned"
+clone_pinned jwt_tool https://github.com/ticarpi/jwt_tool.git "$HOME/dropzone/jwt_tool"
+if [ -d "$HOME/dropzone/jwt_tool" ]; then
+    chmod +x "$HOME/dropzone/jwt_tool/jwt_tool.py" 2>/dev/null
+    # requirements.txt is the source of truth for deps; if upstream ever moves it,
+    # fall back to the ones the README names. requests is already in from start.sh.
+    if [ -f "$HOME/dropzone/jwt_tool/requirements.txt" ]; then
+        if pip install -r "$HOME/dropzone/jwt_tool/requirements.txt" --break-system-packages; then
+            print_success "jwt_tool dependencies installed"
+        else
+            print_warning "jwt_tool dependencies failed - it may not run"
+        fi
     else
-        print_warning "SSTImap clone failed"
+        print_warning "jwt_tool/requirements.txt missing - installing the documented deps"
+        pip_ensure Cryptodome pycryptodomex
+        pip_ensure termcolor termcolor
+        pip_ensure cprint cprint
     fi
-else
-    print_success "SSTImap already exists"
+    print_status "Run it with: python3 ~/dropzone/jwt_tool/jwt_tool.py <JWT>"
+    fin_msg 'jwt_tool'
 fi
-
 
 print_status "Installing additional useful Go tools..."
 export GOPATH=$HOME/go
 export PATH=$PATH:$GOPATH/bin
 
-# go install COMPILES from source each time - skip if the binary already exists so
-# re-runs don't recompile (the single biggest time sink on a re-run).
-go_install() {   # $1=binary name  $2=module path
-    if command -v "$1" &>/dev/null || [ -x "$GOPATH/bin/$1" ]; then
-        print_success "$1 already installed (skip)"
-    elif go install "$2" 2>/dev/null; then
-        print_success "$1 installed"
-    else
-        print_warning "$1 install failed"
-    fi
-}
-go_install httprobe    github.com/tomnomnom/httprobe@latest
-go_install waybackurls github.com/tomnomnom/waybackurls@latest
-go_install subfinder   github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-go_install httpx       github.com/projectdiscovery/httpx/cmd/httpx@latest
+# go_install lives in lib.sh. The module path no longer carries the @version -
+# it is the third argument, so these can be pinned without editing the path.
+go_install httprobe    github.com/tomnomnom/httprobe
+go_install waybackurls github.com/tomnomnom/waybackurls
+go_install subfinder   github.com/projectdiscovery/subfinder/v2/cmd/subfinder
+go_install httpx       github.com/projectdiscovery/httpx/cmd/httpx
 
 print_status "Verifying screenshot tools..."
 if command -v flameshot &> /dev/null; then
@@ -407,28 +453,64 @@ WARN=0
 # 0 the arithmetic result is 0 and bash treats that as EXIT STATUS 1. Any
 # 'cmd && ok && ((PASS++)) || fail' chain then runs the failure branch too. That bug
 # was live below and printed "X verified" and "X NOT working" for the same tool.
-check_tool() {
-    local tool=$1
-    local test_cmd=${2:-"$tool --version"}
-
-    if command -v "$tool" &> /dev/null; then
-        if eval "$test_cmd" &> /dev/null; then
-            print_success "$tool verified"
+# --- verification helpers --------------------------------------------------
+# These RUN the tool instead of just locating it. 'command -v' only proves that a
+# file exists at a path - a truncated download, a missing shared library, a
+# wrong-arch binary or a half-configured package all still sail through it. Ten
+# of the checks below used to pass "command -v X" in as the "functional test",
+# i.e. they checked presence twice and called it verification.
+#
+# _run_check <desc> <command> [pattern]
+#   no pattern -> the command must exit 0.
+#   pattern    -> exit status is IGNORED and the OUTPUT must match /pattern/i.
+#                 Required because many tools print their banner and then exit
+#                 non-zero (hydra -h, proxychains4 -h, responder -h).
+# Everything is wrapped in 'timeout' so one hanging tool cannot stall the run.
+_run_check() {
+    local desc=$1 cmd=$2 pat=${3:-} out rc
+    out=$(timeout 120 bash -c "$cmd" 2>&1); rc=$?
+    if [ "$rc" -eq 124 ]; then
+        print_warning "$desc TIMED OUT during verification"
+        WARN=$((WARN+1)); return 0
+    fi
+    if [ -n "$pat" ]; then
+        if printf '%s' "$out" | grep -qaiE "$pat"; then
+            print_success "$desc verified"
             PASS=$((PASS+1))
         else
-            print_warning "$tool installed but may not be functional"
+            print_warning "$desc ran but its output did not match /$pat/ - suspect"
             WARN=$((WARN+1))
         fi
-    else
-        print_error "$tool NOT installed"
-        FAIL=$((FAIL+1))
+        return 0
     fi
+    if [ "$rc" -eq 0 ]; then
+        print_success "$desc verified"
+        PASS=$((PASS+1))
+    else
+        print_warning "$desc is installed but FAILED to run (exit $rc)"
+        WARN=$((WARN+1))
+    fi
+    return 0
 }
 
-check_file() {
-    local file=$1
-    local desc=$2
+# check_tool <name> [command] [pattern] - PATH lookup first, then run it.
+check_tool() {
+    local tool=$1
+    if ! command -v "$tool" &>/dev/null; then
+        print_error "$tool NOT installed"
+        FAIL=$((FAIL+1)); return 0
+    fi
+    _run_check "$tool" "${2:-$tool --version}" "${3:-}"
+}
 
+# check_cmd <desc> <command> [pattern] - same contract, for things that are not
+# on PATH (repo checkouts invoked through their interpreter).
+check_cmd() { _run_check "$1" "$2" "${3:-}"; }
+
+# check_file - existence only. Correct for DIRECTORIES; do not use it for files
+# we downloaded (see check_payload).
+check_file() {
+    local file=$1 desc=$2
     if [ -e "$file" ]; then
         print_success "$desc verified"
         PASS=$((PASS+1))
@@ -436,6 +518,50 @@ check_file() {
         print_error "$desc NOT found"
         FAIL=$((FAIL+1))
     fi
+}
+
+# check_payload <path> <desc> <pattern> [min-bytes] - for DOWNLOADED files.
+# 'curl -f' catches a 404, but a proxy or captive-portal interception page
+# answers 200 and lands on disk as a perfectly successful download. So: check
+# the size, then sniff the first 2 KB for what the file should actually contain.
+# This is the check that catches "linpeas.sh is 1.4 KB of HTML".
+check_payload() {
+    local f=$1 desc=$2 pat=$3 minb=${4:-1024} sz
+    if [ ! -f "$f" ]; then
+        print_error "$desc NOT found"
+        FAIL=$((FAIL+1)); return 0
+    fi
+    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    if [ "$sz" -lt "$minb" ]; then
+        print_error "$desc is only ${sz} bytes (expected >= ${minb}) - truncated or an error page"
+        FAIL=$((FAIL+1)); return 0
+    fi
+    if head -c 2048 "$f" | grep -qaiE "$pat"; then
+        print_success "$desc verified (${sz} bytes)"
+        PASS=$((PASS+1))
+    else
+        print_error "$desc is the wrong KIND of file - first bytes do not match /$pat/ (HTML error page?)"
+        FAIL=$((FAIL+1))
+    fi
+    return 0
+}
+
+# check_script <path> <desc> - a downloaded shell script that PARSES is a far
+# stronger signal than one that merely exists.
+check_script() {
+    local f=$1 desc=$2
+    if [ ! -f "$f" ]; then
+        print_error "$desc NOT found"
+        FAIL=$((FAIL+1)); return 0
+    fi
+    if bash -n "$f" 2>/dev/null; then
+        print_success "$desc verified (parses as shell)"
+        PASS=$((PASS+1))
+    else
+        print_error "$desc exists but is NOT valid shell - bad download"
+        FAIL=$((FAIL+1))
+    fi
+    return 0
 }
 
 # $1 = python module name, $2 = human label
@@ -450,65 +576,77 @@ check_pymod() {
 }
 
 print_status "Checking core scanning tools..."
-check_tool "nmap"
-check_tool "masscan" "command -v masscan"
-check_tool "gobuster"
-check_tool "ffuf" "ffuf -V"
-check_tool "feroxbuster"
+check_tool "nmap"       "nmap --version"        "nmap version"
+check_tool "masscan"    "masscan --version"     "masscan"
+check_tool "gobuster"   "gobuster version"      "[0-9]+\.[0-9]+"
+check_tool "ffuf"       "ffuf -V"               "ffuf"
+check_tool "feroxbuster" "feroxbuster --version" "feroxbuster"
 
 print_status "Checking web tools..."
-check_tool "sqlmap"
-check_tool "nikto"
-check_tool "nuclei"
-check_tool "whatweb"
+check_tool "nikto"      "nikto -Version"        "nikto"
+check_tool "nuclei"     "nuclei -version"       "nuclei"
+check_tool "whatweb"    "whatweb --version"     "whatweb"
+# Burp is a GUI launcher - running it would open a window, so check the package
+# state instead, plus the JRE it needs. This is also the live answer to the
+# open 'is openjdk-11-jdk still a real package' question: if java runs, Burp is fine.
+check_tool "burpsuite"  "dpkg -s burpsuite"     "install ok installed"
+check_tool "java"       "java -version"         "version"
+check_cmd  "jwt_tool"   "python3 $HOME/dropzone/jwt_tool/jwt_tool.py --help" "jwt|usage"
 
 print_status "Checking network tools..."
-check_tool "chisel"
-check_tool "socat" "socat -V"
-check_tool "proxychains4" "command -v proxychains4"
-check_tool "sshuttle" "command -v sshuttle"
+check_tool "chisel"       "chisel --version"    "[0-9]"
+check_tool "socat"        "socat -V"            "socat version"
+check_tool "proxychains4" "proxychains4 -h"     "proxychains|usage"
+check_tool "sshuttle"     "sshuttle --version"  "[0-9]"
 
 print_status "Checking password tools..."
-check_tool "hydra" "command -v hydra"
-check_tool "john" "command -v john"
-check_tool "hashcat"
+check_tool "hydra"   "hydra -h"                 "hydra v[0-9]|syntax:"
+check_tool "john"    "john --list=build-info"   "version|build"
+check_tool "hashcat" "hashcat --version"        "[0-9]+\.[0-9]"
 
 print_status "Checking exploitation / traffic tools..."
-check_tool "msfconsole" "command -v msfconsole"
-check_tool "responder" "command -v responder"
-check_tool "tcpdump" "command -v tcpdump"
-check_tool "tshark" "command -v tshark"
-check_tool "burpsuite" "command -v burpsuite"
-check_tool "netexec" "command -v netexec"
+check_tool "msfconsole" "msfconsole --version"  "framework|metasploit"
+check_tool "responder"  "responder -h"          "responder|usage"
+check_tool "tcpdump"    "tcpdump --version"     "tcpdump version|libpcap"
+check_tool "tshark"     "tshark --version"      "tshark"
+check_tool "netexec"    "netexec --version"     "[0-9]+\.[0-9]"
 
 print_status "Checking container tooling..."
-check_tool "docker" "docker --version"
-check_tool "docker-compose" "docker-compose version"
+# 'docker info' talks to the DAEMON - it is the only check that proves docker can
+# actually run something. Falls back to sudo because the docker group is not
+# active until the operator has logged out and back in.
+check_tool "docker"         "docker info 2>/dev/null || sudo docker info" "server version"
+check_tool "docker-compose" "docker-compose version"                      "[0-9]+\.[0-9]"
 
 print_status "Checking Go tools..."
-check_tool "httpx" "command -v httpx"
-check_tool "subfinder" "command -v subfinder"
-check_tool "httprobe" "command -v httprobe"
-check_tool "waybackurls" "command -v waybackurls"
+check_tool "httpx"     "httpx -version"     "httpx"
+check_tool "subfinder" "subfinder -version" "subfinder"
+# These two read domains on stdin; empty stdin makes them exit 0 without touching
+# the network, which is the cheapest honest proof that the binary executes.
+check_tool "httprobe"    "printf '' | timeout 10 httprobe"
+check_tool "waybackurls" "printf '' | timeout 10 waybackurls"
 
 print_status "Checking screenshot tools..."
-check_tool "flameshot"
-check_tool "scrot" "scrot --version"
+check_tool "flameshot" "flameshot --version" "flameshot"
+check_tool "scrot"     "scrot --version"     "scrot"
+check_tool "maim"      "maim --version"      "[0-9]"
 
 print_status "Checking privilege escalation scripts..."
-check_file "$HOME/dropzone/privesc/linpeas.sh" "linpeas.sh"
-check_file "$HOME/dropzone/privesc/winpeas.exe" "winpeas.exe"
-check_file "$HOME/dropzone/pspy64" "pspy64"
-check_file "$HOME/dropzone/username-anarchy" "username-anarchy"
-check_file "/usr/local/bin/upshell" "upshell"
+check_script  "$HOME/dropzone/privesc/linpeas.sh" "linpeas.sh"
+check_payload "$HOME/dropzone/privesc/winpeas.exe"      "winpeas.exe"      "^MZ"                 100000
+check_payload "$HOME/dropzone/pspy64"                   "pspy64"           "ELF"                 1000000
+check_payload "$HOME/dropzone/privesc/PowerUp.ps1"      "PowerUp.ps1"      "function|param"      10000
+check_payload "$HOME/dropzone/privesc/PrivescCheck.ps1" "PrivescCheck.ps1" "function|param"      10000
+check_payload "$HOME/dropzone/privesc/privesc.ps1"      "privesc.ps1"      "function|param|write" 5000
+check_payload "$HOME/dropzone/username-anarchy"         "username-anarchy" "ruby|#!"              5000
+check_script  "/usr/local/bin/upshell" "upshell"
 
 print_status "Checking cloned repos..."
 check_file "$HOME/dropzone/nuclei-templates" "nuclei-templates"
-check_file "$HOME/dropzone/SSTImap" "SSTImap"
 
 print_status "Checking wordlists..."
-check_file "/usr/share/wordlists/rockyou.txt" "rockyou.txt"
-check_file "/usr/share/seclists" "SecLists"
+check_payload "/usr/share/wordlists/rockyou.txt" "rockyou.txt" "." 50000000
+check_file    "/usr/share/seclists" "SecLists"
 
 print_status "Checking Python packages..."
 check_pymod requests "requests"
@@ -520,8 +658,8 @@ check_pymod openpyxl "openpyxl"
 check_pymod PIL "Pillow"
 check_pymod pytesseract "pytesseract"
 check_pymod fitz "PyMuPDF (fitz)"
-check_tool "tesseract" "tesseract --version"
-check_tool "soffice" "command -v soffice"
+check_tool "tesseract" "tesseract --version" "tesseract"
+check_tool "soffice"   "soffice --version"   "libreoffice"
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════${NC}"
@@ -543,6 +681,8 @@ if [ ${#APT_FAILED[@]} -gt 0 ]; then
     print_warning "APT packages that FAILED to install: ${APT_FAILED[*]}"
     print_warning "  Retry manually: sudo apt install ${APT_FAILED[*]}"
 fi
+
+pin_summary
 
 echo ""
 echo -e "${YELLOW}╔═══════════════════════════════════════════════════════╗${NC}"

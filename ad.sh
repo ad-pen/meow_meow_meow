@@ -2,76 +2,20 @@
 
 set -u
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
 LOG_FILE="$HOME/ad_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-print_status() {
-    echo -e "${BLUE}[*]${NC} $1"
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-print_success() {
-    echo -e "${GREEN}[+]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[-]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
-}
-
-fin_msg(){
-    echo -e "\n${GREEN}#################################${NC}"
-    echo -e "${GREEN}  $1 DONE${NC}"
-    echo -e "${GREEN}#################################${NC}\n"
-}
-
-# ---------------------------------------------------------------------------
-# Resilient / idempotent install helpers: make re-runs fast and stop one bad
-# package from silently sinking a whole batch.
-# ---------------------------------------------------------------------------
-APT_FAILED=()   # apt packages that failed, reported at the end
-
-# Install apt packages ONE AT A TIME so a single failure is logged and skipped
-# instead of aborting the whole 'apt install a b c' transaction. Already-present
-# packages are detected with dpkg and skipped without hitting the network.
-apt_install() {
-    local pkg
-    for pkg in "$@"; do
-        if dpkg -s "$pkg" &>/dev/null; then
-            print_success "$pkg already installed"
-        elif sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"; then
-            # 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
-            # DEBIAN_FRONTEND, so without this, debconf prompts (e.g. neo4j/bloodhound
-            # preconfigure) appear and abort the non-interactive install.
-            print_success "$pkg installed"
-        else
-            print_warning "$pkg FAILED to install"
-            APT_FAILED+=("$pkg")
-        fi
-    done
-}
-
-# Idempotent pip install: skip entirely if the module already imports, so re-runs
-# and cross-script duplicates (minikerberos/pypykatz already come from all.sh)
-# don't re-resolve/re-download. $1=import name, rest=pip specs.
-pip_ensure() {
-    local mod=$1; shift
-    if python3 -c "import $mod" &>/dev/null; then
-        print_success "python: $mod already present (skip)"
-    elif pip install "$@" --break-system-packages; then
-        print_success "python: $mod installed"
-    else
-        print_warning "python: $mod FAILED to install"
-    fi
-}
+# Colours, print_*, fin_msg, apt_install, pip_ensure and the pin manifest live in
+# lib.sh - previously copy-pasted here and in all.sh, so fixes to one never
+# reached the other.
+if [ ! -f "$SCRIPT_DIR/lib.sh" ]; then
+    echo "[-] lib.sh not found next to ad.sh - incomplete clone? Cannot continue."
+    exit 1
+fi
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
 
 echo -e "${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
@@ -141,16 +85,12 @@ fin_msg 'Database guidance'
 
 
 print_status "Cloning Ghostpack compiled binaries..."
-if [ ! -d "Ghostpack-CompiledBinaries" ]; then
-    if git clone https://github.com/r3motecontrol/Ghostpack-CompiledBinaries; then
-        bin_count=$(find Ghostpack-CompiledBinaries -name "*.exe" | wc -l)
-        print_success "Ghostpack binaries cloned ($bin_count executables)"
-        fin_msg 'Ghostpack Compiled Binaries'
-    else
-        print_warning "Ghostpack binaries clone failed"
-    fi
-else
-    print_success "Ghostpack binaries already exist"
+if clone_pinned Ghostpack-CompiledBinaries \
+        https://github.com/r3motecontrol/Ghostpack-CompiledBinaries \
+        "$HOME/dropzone/Ghostpack-CompiledBinaries"; then
+    bin_count=$(find "$HOME/dropzone/Ghostpack-CompiledBinaries" -name "*.exe" | wc -l)
+    print_success "Ghostpack: $bin_count executables"
+    fin_msg 'Ghostpack Compiled Binaries'
 fi
 
 print_status "Installing SharpEfsPotato (requires mono for building)..."
@@ -159,10 +99,10 @@ if ! command -v mono &> /dev/null; then
     sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y mono-complete mono-devel
 fi
 
-if [ ! -d "SharpEfsPotato" ]; then
-    if git clone https://github.com/bugch3ck/SharpEfsPotato; then
-        print_success "SharpEfsPotato cloned"
-        cd SharpEfsPotato || print_warning "cd SharpEfsPotato failed - skipping build"
+if [ ! -d "$HOME/dropzone/SharpEfsPotato" ]; then
+    if clone_pinned SharpEfsPotato https://github.com/bugch3ck/SharpEfsPotato \
+            "$HOME/dropzone/SharpEfsPotato"; then
+        cd "$HOME/dropzone/SharpEfsPotato" || print_warning "cd SharpEfsPotato failed - skipping build"
         # '[ -f "*.csproj" ]' was a QUOTED glob: test never expands it, so it looked for
         # a file literally named '*.csproj' and could never match. Dead branch.
         if [ -f "SharpEfsPotato.sln" ] || compgen -G "*.csproj" >/dev/null 2>&1; then
@@ -212,30 +152,14 @@ else
 fi
 
 print_status "Installing PKINITtools..."
-if [ ! -d "PKINITtools" ]; then
-    if git clone https://github.com/dirkjanm/PKINITtools; then
-        print_success "PKINITtools cloned"
-    else
-        print_warning "PKINITtools clone failed"
-    fi
-else
-    print_success "PKINITtools already exists"
-fi
+clone_pinned PKINITtools https://github.com/dirkjanm/PKINITtools "$HOME/dropzone/PKINITtools"
 pip_ensure minikerberos minikerberos   # usually already present from all.sh; skipped if so
 fin_msg 'PKINITtools'
 
 print_status "Installing bloodyAD..."
-if [ ! -d "bloodyAD" ]; then
-    if git clone https://github.com/CravateRouge/bloodyAD.git; then
-        print_success "bloodyAD cloned"
-    else
-        print_warning "bloodyAD clone failed"
-    fi
-else
-    print_success "bloodyAD already exists"
-fi
-if [ -d "bloodyAD" ]; then
-    cd bloodyAD || exit 1
+clone_pinned bloodyAD https://github.com/CravateRouge/bloodyAD.git "$HOME/dropzone/bloodyAD"
+if [ -d "$HOME/dropzone/bloodyAD" ]; then
+    cd "$HOME/dropzone/bloodyAD" || exit 1
     if pip install -r requirements.txt --break-system-packages; then
         print_success "bloodyAD dependencies installed"
     else
@@ -246,7 +170,7 @@ if [ -d "bloodyAD" ]; then
 fi
 
 print_status "Installing Kerbrute..."
-if sudo curl -L https://github.com/ropnop/kerbrute/releases/download/v1.0.3/kerbrute_linux_amd64 -o /usr/local/bin/kerbrute && sudo chmod +x /usr/local/bin/kerbrute; then
+if fetch_pinned kerbrute /usr/local/bin/kerbrute sudo && sudo chmod +x /usr/local/bin/kerbrute; then
     kerbrute_version=$(kerbrute version 2>&1 || echo "installed")
     print_success "Kerbrute installed: $kerbrute_version"
     fin_msg 'Kerbrute'
@@ -255,7 +179,7 @@ else
 fi
 
 print_status "Installing windapsearch..."
-if sudo wget -q https://github.com/ropnop/go-windapsearch/releases/download/v0.3.0/windapsearch-linux-amd64 -O /usr/local/bin/windapsearch && sudo chmod +x /usr/local/bin/windapsearch; then
+if fetch_pinned windapsearch /usr/local/bin/windapsearch sudo && sudo chmod +x /usr/local/bin/windapsearch; then
     print_success "windapsearch installed to /usr/local/bin/windapsearch"
     fin_msg 'windapsearch'
 else
@@ -321,59 +245,119 @@ AD_FAIL=0
 
 # Counters use VAR=$((VAR+1)), never ((VAR++)): post-increment returns the OLD value,
 # so at 0 it evaluates to exit status 1 and any '&& ... || ...' chain runs BOTH branches.
+# --- verification helpers --------------------------------------------------
+# Same contract as all.sh: RUN the tool, do not just locate it. 'command -v'
+# passes for a binary that cannot execute - wrong arch, missing lib, half-built
+# package - which is exactly the failure mode a rebuilt box hits.
+# NOTE: these helpers are duplicated from all.sh. That duplication is a known
+# problem (see TOOLS.md / the lib.sh note); fix it in one place when it moves.
+#
+# _ad_check <desc> <command> [pattern]
+#   no pattern -> must exit 0.   pattern -> exit status ignored, output must match.
+_ad_check() {
+    local desc=$1 cmd=$2 pat=${3:-} out rc
+    out=$(timeout 120 bash -c "$cmd" 2>&1); rc=$?
+    if [ "$rc" -eq 124 ]; then
+        print_warning "$desc TIMED OUT during verification"
+        AD_FAIL=$((AD_FAIL+1)); return 0
+    fi
+    if [ -n "$pat" ]; then
+        if printf '%s' "$out" | grep -qaiE "$pat"; then
+            print_success "$desc verified"; AD_PASS=$((AD_PASS+1))
+        else
+            print_error "$desc ran but output did not match /$pat/ - suspect"
+            AD_FAIL=$((AD_FAIL+1))
+        fi
+        return 0
+    fi
+    if [ "$rc" -eq 0 ]; then
+        print_success "$desc verified"; AD_PASS=$((AD_PASS+1))
+    else
+        print_error "$desc is installed but FAILED to run (exit $rc)"
+        AD_FAIL=$((AD_FAIL+1))
+    fi
+    return 0
+}
+
 verify_tool() {
     local tool=$1
-    if command -v "$tool" &> /dev/null; then
-        print_success "$tool verified"
-        AD_PASS=$((AD_PASS+1))
-    else
+    if ! command -v "$tool" &>/dev/null; then
         print_error "$tool NOT found"
-        AD_FAIL=$((AD_FAIL+1))
+        AD_FAIL=$((AD_FAIL+1)); return 0
+    fi
+    _ad_check "$tool" "${2:-$tool --version}" "${3:-}"
+}
+
+verify_cmd() { _ad_check "$1" "$2" "${3:-}"; }
+
+verify_file() {
+    local file=$1 desc=$2
+    if [ -e "$file" ]; then
+        print_success "$desc verified"; AD_PASS=$((AD_PASS+1))
+    else
+        print_error "$desc NOT found"; AD_FAIL=$((AD_FAIL+1))
     fi
 }
 
-verify_file() {
-    local file=$1
-    local desc=$2
-    if [ -e "$file" ]; then
-        print_success "$desc verified"
-        AD_PASS=$((AD_PASS+1))
-    else
-        print_error "$desc NOT found"
-        AD_FAIL=$((AD_FAIL+1))
+# A cloned repo that exists but is EMPTY (interrupted clone) used to pass.
+verify_repo() {
+    local dir=$1 desc=$2 n
+    if [ ! -d "$dir" ]; then
+        print_error "$desc NOT found"; AD_FAIL=$((AD_FAIL+1)); return 0
     fi
+    n=$(find "$dir" -type f 2>/dev/null | wc -l)
+    if [ "$n" -lt 2 ]; then
+        print_error "$desc is present but nearly empty ($n files) - interrupted clone"
+        AD_FAIL=$((AD_FAIL+1))
+    else
+        print_success "$desc verified ($n files)"; AD_PASS=$((AD_PASS+1))
+    fi
+    return 0
 }
 
 # $1 = python module name, $2 = human label
 verify_pymod() {
     if python3 -c "import $1" &> /dev/null; then
-        print_success "$2 verified"
-        AD_PASS=$((AD_PASS+1))
+        print_success "$2 verified"; AD_PASS=$((AD_PASS+1))
     else
-        print_error "$2 NOT working"
-        AD_FAIL=$((AD_FAIL+1))
+        print_error "$2 NOT working"; AD_FAIL=$((AD_FAIL+1))
     fi
 }
 
-verify_tool "bloodhound"
-verify_tool "neo4j"
-verify_tool "evil-winrm"
-verify_tool "responder"
-verify_tool "enum4linux"
-verify_tool "kerbrute"
-verify_tool "windapsearch"
-verify_tool "certipy-ad"
-verify_tool "netexec"
-verify_tool "impacket-secretsdump"
-verify_tool "bloodhound-python"
+# BloodHound CE and neo4j are launchers/services, not CLIs with --version, so we
+# check the package state rather than starting them (starting neo4j here would
+# clash with BloodHound CE on 7474/7687 - see the install note above).
+verify_tool "bloodhound" "dpkg -s bloodhound" "install ok installed"
+verify_tool "neo4j"      "dpkg -s neo4j"      "install ok installed"
+verify_tool "evil-winrm" "evil-winrm -h"      "evil-winrm|usage"
+verify_tool "responder"  "responder -h"       "responder|usage"
+verify_tool "enum4linux" "enum4linux -h"      "enum4linux|usage"
+verify_tool "kerbrute"   "kerbrute version"   "[0-9]+\.[0-9]"
+verify_tool "windapsearch" "windapsearch --help" "windapsearch|usage"
+verify_tool "certipy-ad" "certipy-ad --version" "[0-9]"
+verify_tool "netexec"    "netexec --version"  "[0-9]+\.[0-9]"
+verify_tool "impacket-secretsdump" "impacket-secretsdump -h" "impacket|usage"
+verify_tool "bloodhound-python"    "bloodhound-python -h"    "usage|bloodhound"
 
-verify_file "$HOME/dropzone/Ghostpack-CompiledBinaries" "Ghostpack binaries"
-verify_file "$HOME/dropzone/SharpEfsPotato" "SharpEfsPotato"
-verify_file "$HOME/dropzone/PKINITtools" "PKINITtools"
-verify_file "$HOME/dropzone/bloodyAD" "bloodyAD"
+verify_repo "$HOME/dropzone/Ghostpack-CompiledBinaries" "Ghostpack binaries"
+# Rubeus is the one file we can count on being in that repo - prove it is a real
+# PE and not an HTML error page or an LFS pointer stub.
+if [ -f "$HOME/dropzone/Ghostpack-CompiledBinaries/Rubeus.exe" ]; then
+    if head -c 2 "$HOME/dropzone/Ghostpack-CompiledBinaries/Rubeus.exe" | grep -qa "^MZ"; then
+        print_success "Rubeus.exe verified (valid PE)"; AD_PASS=$((AD_PASS+1))
+    else
+        print_error "Rubeus.exe is not a PE file - bad clone"; AD_FAIL=$((AD_FAIL+1))
+    fi
+fi
+verify_repo "$HOME/dropzone/SharpEfsPotato" "SharpEfsPotato"
+verify_repo "$HOME/dropzone/bloodyAD" "bloodyAD"
+# Running PKINITtools with -h imports minikerberos, so this proves the tool AND
+# its dependency in one go - the thing a file-existence check cannot tell you.
+verify_cmd "PKINITtools" "python3 $HOME/dropzone/PKINITtools/gettgtpkinit.py -h" "usage|error"
 
 verify_pymod pypykatz "pypykatz"
 verify_pymod impacket "impacket (python module)"
+verify_pymod ldap3 "ldap3 (bloodyAD dependency)"
 
 echo ""
 echo -e "${GREEN}═══════════════════════════════════════${NC}"
@@ -394,6 +378,8 @@ if [ ${#APT_FAILED[@]} -gt 0 ]; then
     print_warning "APT packages that FAILED to install: ${APT_FAILED[*]}"
     print_warning "  Retry manually: sudo apt install ${APT_FAILED[*]}"
 fi
+
+pin_summary
 
 echo ""
 echo -e "${GREEN}╔═══════════════════════════════════════════════════════╗${NC}"
