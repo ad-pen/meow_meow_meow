@@ -24,6 +24,13 @@ namespace jVision.Server.Controllers
             _hubContext = hubContext;
         }
 
+        // Every cred must say where it came from. Enforced here as well as in
+        // the UI so a direct POST can't slip an unclassified cred into the list.
+        public static readonly string[] Origins = { "Web", "AD", "Others" };
+
+        private static string NormalizeOrigin(string o) =>
+            Origins.FirstOrDefault(v => string.Equals(v, (o ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+
         // GET: api/Creds
         [HttpGet]
         public async Task<ActionResult<IEnumerable<Cred>>> GetCred()
@@ -82,8 +89,14 @@ namespace jVision.Server.Controllers
         [HttpPost]
         public async Task<IActionResult> PostCred(Cred cred)
         {
-            // Dedup on (Type, Text) -- catches paste-the-same-list-twice.
-            if (await _context.Cred.AnyAsync(c => c.Type == cred.Type && c.Text == cred.Text))
+            var origin = NormalizeOrigin(cred?.Origin);
+            if (origin == null)
+                return BadRequest("origin required: Web, AD or Others");
+            cred.Origin = origin;
+
+            // Dedup on (Type, Text, Origin) -- catches paste-the-same-list-twice,
+            // while still letting the same cred be recorded for both Web and AD.
+            if (await _context.Cred.AnyAsync(c => c.Type == cred.Type && c.Text == cred.Text && c.Origin == origin))
             {
                 return StatusCode(200);
             }
@@ -104,7 +117,13 @@ namespace jVision.Server.Controllers
             foreach (var c in creds)
             {
                 if (string.IsNullOrWhiteSpace(c.Text)) continue;
-                if (await _context.Cred.AnyAsync(x => x.Type == c.Type && x.Text == c.Text))
+
+                var origin = NormalizeOrigin(c.Origin);
+                if (origin == null)
+                    return BadRequest("origin required: Web, AD or Others");
+                c.Origin = origin;
+
+                if (await _context.Cred.AnyAsync(x => x.Type == c.Type && x.Text == c.Text && x.Origin == origin))
                     continue;
                 _context.Cred.Add(c);
                 await _context.SaveChangesAsync();

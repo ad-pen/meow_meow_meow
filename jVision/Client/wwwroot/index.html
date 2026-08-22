@@ -34,8 +34,52 @@
     <script src="_content/BlazorTable/BlazorTable.min.js"></script>
     <script>
         window.clipboardCopy = {
+            // Returns true only if the text really reached the clipboard, so the
+            // UI can show a warning instead of a tick when it didn't.
             copyText: function (text) {
-                navigator.clipboard.writeText(text);
+                // navigator.clipboard only exists in a secure context. jVision is
+                // reached over plain http on a LAN address, so everyone except
+                // the person on localhost falls through to execCommand.
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(text);
+                    return true;
+                }
+
+                var ta = document.createElement("textarea");
+                ta.value = text;
+                ta.setAttribute("readonly", "");
+                ta.style.position = "fixed";
+                ta.style.top = "0";
+                ta.style.left = "0";
+                ta.style.opacity = "0";
+                document.body.appendChild(ta);
+
+                var sel = document.getSelection();
+                var prev = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+
+                ta.focus();
+                ta.select();
+                // Safari ignores select() on a readonly textarea without this.
+                if (ta.setSelectionRange) ta.setSelectionRange(0, ta.value.length);
+
+                var ok = false;
+                try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+
+                document.body.removeChild(ta);
+                if (prev && sel) { sel.removeAllRanges(); sel.addRange(prev); }
+                return ok;
+            },
+
+            // Diagnostic for the copy button: tells us which path is in play and
+            // whether the page is even allowed to touch the clipboard.
+            probe: function () {
+                return JSON.stringify({
+                    secure: window.isSecureContext,
+                    hasApi: !!navigator.clipboard,
+                    canExec: typeof document.execCommand === "function",
+                    focused: document.hasFocus(),
+                    origin: window.location.origin
+                });
             }
         };
     </script>

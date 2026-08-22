@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -74,8 +75,20 @@ namespace jVision.Server
             }
 
             //app.UseHttpsRedirection();
+            // index.html carries the inline JS shims. Served without a
+            // Cache-Control header a browser applies heuristic caching, so
+            // teammates kept running a stale copy for hours after a redeploy
+            // and even a hard-reload didn't always beat it.
+            var staticFiles = new StaticFileOptions
+            {
+                OnPrepareResponse = ctx =>
+                {
+                    if (ctx.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+                        ctx.Context.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+                }
+            };
             app.UseBlazorFrameworkFiles();
-            app.UseStaticFiles();
+            app.UseStaticFiles(staticFiles);
             app.UseRouting();
             app.UseAuthentication();
             app.UseAuthorization();
@@ -87,7 +100,7 @@ namespace jVision.Server
                 endpoints.MapRazorPages();
                 endpoints.MapControllers();
                 endpoints.MapHub<BoxHub>("/boxhub");
-                endpoints.MapFallbackToFile("index.html");
+                endpoints.MapFallbackToFile("index.html", staticFiles);
             });
         }
     }

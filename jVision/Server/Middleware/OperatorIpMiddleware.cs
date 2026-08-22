@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Concurrent;
+using System.IO;
+using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using jVision.Server.Data;
@@ -36,7 +38,10 @@ namespace jVision.Server.Middleware
             if (ctx.User?.Identity?.IsAuthenticated != true) return;
 
             var op = ctx.User.Identity.Name;
-            var ip = Normalize(ctx.Connection.RemoteIpAddress);
+            var addr = ctx.Connection.RemoteIpAddress;
+            if (IsThisHost(addr)) return;
+
+            var ip = Normalize(addr);
             if (string.IsNullOrEmpty(op) || string.IsNullOrEmpty(ip)) return;
 
             var now = DateTime.UtcNow;
@@ -71,6 +76,42 @@ namespace jVision.Server.Middleware
             if (addr == null) return null;
             if (addr.IsIPv4MappedToIPv6) addr = addr.MapToIPv4();
             return addr.ToString();
+        }
+
+        // Browsing jVision from the same machine that hosts the container makes
+        // the request arrive from the Docker bridge gateway, which is the host
+        // itself rather than any operator. Matching the actual gateway rather
+        // than blanket-excluding 172.16/12 matters: an engagement network can
+        // legitimately live in that range, and we must not drop real operators.
+        private static bool IsThisHost(IPAddress addr)
+        {
+            if (addr == null) return true;
+            if (IPAddress.IsLoopback(addr)) return true;
+
+            var gw = _gateway.Value;
+            return gw != null && gw.Equals(addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4() : addr);
+        }
+
+        private static readonly Lazy<IPAddress> _gateway = new Lazy<IPAddress>(ReadDefaultGateway);
+
+        // /proc/net/route, tab-separated: the default route is the row whose
+        // Destination is all zeroes. Gateway is a little-endian hex u32.
+        private static IPAddress ReadDefaultGateway()
+        {
+            try
+            {
+                foreach (var line in File.ReadAllLines("/proc/net/route").Skip(1))
+                {
+                    var f = line.Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (f.Length < 3 || f[1] != "00000000" || f[2] == "00000000") continue;
+                    return new IPAddress(BitConverter.GetBytes(Convert.ToUInt32(f[2], 16)));
+                }
+            }
+            catch (IOException)
+            {
+                // Not on Linux, or /proc unavailable. Loopback filtering still applies.
+            }
+            return null;
         }
     }
 }

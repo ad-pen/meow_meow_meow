@@ -28,6 +28,8 @@ namespace jVision.Server.Data
 
         public DbSet<TeamIp> TeamIp { get; set; }
 
+        public DbSet<ScratchPage> ScratchPage { get; set; }
+
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);

@@ -24,6 +24,16 @@
             </div>
 
             <div>
+                <label>From <span class="text-danger">*</span></label>
+                <select class="form-control custom-select" @bind="_origin">
+                    <option value="">-- select --</option>
+                    <option value="Web">Web</option>
+                    <option value="AD">AD</option>
+                    <option value="Others">Others</option>
+                </select>
+            </div>
+
+            <div>
                 <label>Mode</label>
                 <select class="form-control custom-select"
                         value="@(_bulkMode ? "true" : "false")"
@@ -49,7 +59,11 @@
             </div>
 
             <div>
-                <button class="btn btn-success" @onclick="AddOrBulk">Submit</button>
+                <button class="btn btn-success" @onclick="AddOrBulk"
+                        disabled="@string.IsNullOrEmpty(_origin)"
+                        title="@(string.IsNullOrEmpty(_origin) ? "pick Web, AD or Others first" : "")">
+                    Submit
+                </button>
             </div>
         </div>
 
@@ -76,6 +90,21 @@
     </div>
 </div>
 
+<div class="row" style="margin-bottom:12px;">
+    <div class="col d-flex align-items-center" style="gap:8px;">
+        <span class="text-muted"><small>Show:</small></span>
+        <div class="btn-group btn-group-sm">
+            @foreach (var f in _filters)
+            {
+                <button class="btn @(_filter == f.Value ? "btn-primary" : "btn-outline-primary")"
+                        @onclick="() => _filter = f.Value">
+                    @f.Label (@CountFor(f.Value))
+                </button>
+            }
+        </div>
+    </div>
+</div>
+
 <div class="row">
     @foreach (var col in _columns)
     {
@@ -96,7 +125,10 @@
                                    title="mark verified (working)" />
                         </div>
                         <div class="p-1 mr-auto" style="min-width:0; word-break:break-all;">
-                            <div style="@(c.Verified ? "font-weight:600;" : "")">@c.Text</div>
+                            <div style="@(c.Verified ? "font-weight:600;" : "")">
+                                <span class="badge @OriginBadge(c.Origin)"
+                                      style="margin-right:6px;">@(c.Origin ?? "?")</span>@c.Text
+                            </div>
                             @if (!string.IsNullOrEmpty(c.Source))
                             {
                                 <div class="text-muted"><small>@c.Source</small></div>
@@ -165,8 +197,36 @@
     private enum cType { Username, Password, Pair }
     private cType drop = cType.Username;
 
+    // "" means no origin picked yet -- Submit stays disabled until it's set.
+    private string _origin = "";
+
+    // "" means show everything, including pre-existing creds with no origin.
+    private string _filter = "";
+    private record Filter(string Label, string Value);
+    private readonly Filter[] _filters = new[]
+    {
+        new Filter("All",    ""),
+        new Filter("Web",    "Web"),
+        new Filter("AD",     "AD"),
+        new Filter("Others", "Others"),
+    };
+
+    private static bool MatchesFilter(Cred c, string filter) =>
+        filter.Length == 0 || string.Equals(c.Origin, filter, StringComparison.OrdinalIgnoreCase);
+
+    private int CountFor(string filter) =>
+        creds.Count(c => c != null && MatchesFilter(c, filter));
+
+    private static string OriginBadge(string origin) => origin switch
+    {
+        "Web"    => "badge-info",
+        "AD"     => "badge-warning",
+        "Others" => "badge-secondary",
+        _        => "badge-light",
+    };
+
     private IEnumerable<Cred> CredsOfType(string t) =>
-        creds.Where(c => c != null && c.Type == t);
+        creds.Where(c => c != null && c.Type == t && MatchesFilter(c, _filter));
 
     protected override async Task OnInitializedAsync()
     {
@@ -204,6 +264,11 @@
     {
         _error = null;
         _status = null;
+        if (string.IsNullOrEmpty(_origin))
+        {
+            _error = "pick where the cred came from: Web, AD or Others";
+            return;
+        }
         try
         {
             if (_bulkMode)
@@ -216,7 +281,8 @@
                 if (lines.Count == 0) { _error = "nothing pasted"; return; }
                 var payload = lines.Select(l => new Cred
                 {
-                    Text = l, Type = drop.ToString(), Source = _source, Verified = false,
+                    Text = l, Type = drop.ToString(), Source = _source,
+                    Verified = false, Origin = _origin,
                 }).ToList();
                 var r = await Http.PostAsJsonAsync($"{requestUri}/bulk", payload);
                 if (!r.IsSuccessStatusCode)
@@ -235,7 +301,7 @@
                 var newCred = new Cred
                 {
                     Text = _credText.Trim(), Type = drop.ToString(),
-                    Source = _source, Verified = false,
+                    Source = _source, Verified = false, Origin = _origin,
                 };
                 var r = await Http.PostAsJsonAsync(requestUri, newCred);
                 if (!r.IsSuccessStatusCode)

@@ -286,6 +286,9 @@ namespace jVision.Server.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("Origin")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Source")
                         .HasColumnType("TEXT");
 
@@ -383,6 +386,30 @@ namespace jVision.Server.Migrations
                     b.HasIndex("UploadedAt");
 
                     b.ToTable("ScanUpload");
+                });
+
+            modelBuilder.Entity("jVision.Shared.Models.ScratchPage", b =>
+                {
+                    b.Property<int>("ScratchPageId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Content")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ScratchPageId");
+
+                    b.ToTable("ScratchPage");
                 });
 
             modelBuilder.Entity("jVision.Shared.Models.TeamIp", b =>

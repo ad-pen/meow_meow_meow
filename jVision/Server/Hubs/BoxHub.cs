@@ -21,6 +21,7 @@ namespace jVision.Server.Hubs
         Task CredUpdated(Cred c);
         Task CredDeleted(int c);
         Task LogsAdded(int count);
+        Task ScratchChanged();
         Task ScanUploaded(ScanUpload s);
         Task ScanDeleted(int id);
     }
