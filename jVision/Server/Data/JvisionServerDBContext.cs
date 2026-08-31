@@ -30,6 +30,8 @@ namespace jVision.Server.Data
 
         public DbSet<ScratchPage> ScratchPage { get; set; }
 
+        public DbSet<CustomTab> CustomTab { get; set; }
+
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);

@@ -82,6 +82,59 @@
                 });
             }
         };
+
+        // Fetch the server-rendered topology SVG, rasterize it to PNG via an
+        // offscreen canvas, and trigger a download. Client-side keeps the
+        // server free of libgdiplus / SkiaSharp deps.
+        window.topologyPng = {
+            download: async function (svgUrl, fileName, scale) {
+                scale = scale || 2;  // 2x for a crisper PNG on high-DPI screens
+                const resp = await fetch(svgUrl, { credentials: "same-origin" });
+                if (!resp.ok) throw new Error("svg fetch failed: " + resp.status);
+                const svgText = await resp.text();
+
+                // Parse the SVG to read its intrinsic width/height. Fall back
+                // to 1280x720 if the file didn't declare them.
+                const doc = new DOMParser().parseFromString(svgText, "image/svg+xml");
+                const root = doc.documentElement;
+                const w = parseInt(root.getAttribute("width")) || 1280;
+                const h = parseInt(root.getAttribute("height")) || 720;
+
+                const svgBlob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+                const svgUrlObj = URL.createObjectURL(svgBlob);
+                try {
+                    await new Promise((resolve, reject) => {
+                        const img = new Image();
+                        img.onload = () => {
+                            const canvas = document.createElement("canvas");
+                            canvas.width = w * scale;
+                            canvas.height = h * scale;
+                            const ctx = canvas.getContext("2d");
+                            // White background -- otherwise transparent PNGs
+                            // look grey when pasted into slides.
+                            ctx.fillStyle = "#ffffff";
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+                            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                            canvas.toBlob(function (blob) {
+                                const a = document.createElement("a");
+                                a.href = URL.createObjectURL(blob);
+                                a.download = fileName || "topology.png";
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                                setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+                                resolve();
+                            }, "image/png");
+                        };
+                        img.onerror = e => reject(e);
+                        img.src = svgUrlObj;
+                    });
+                } finally {
+                    URL.revokeObjectURL(svgUrlObj);
+                }
+                return true;
+            }
+        };
     </script>
 </body>
 

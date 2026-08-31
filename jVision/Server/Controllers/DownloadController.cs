@@ -1,12 +1,17 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
+using ClosedXML.Excel;
 using Microsoft.AspNetCore.Mvc;
 using jVision.Server.Download;
 using jVision.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using jVision.Server.Models;
+using jVision.Shared.Models;
 using Newtonsoft.Json;
 
 namespace jVision.Server.Controllers
@@ -57,6 +62,246 @@ namespace jVision.Server.Controllers
             var boxes = _context.Boxes.Include(i => i.Services).ToList();
             var bytes = TopologyRenderer.RenderDrawio(boxes);
             return File(bytes, "application/xml", "topology.drawio");
+        }
+
+        // GET /download/all -- one zip with every jVision artifact suitable for
+        // uploading to Drive at end of engagement:
+        //   boxes.json, credentials.json, scratchpad.json, custom-tabs.json,
+        //   team-ips.json, scan-uploads-index.json, logs.xlsx, topology.svg,
+        //   topology.drawio, scans/<original filenames>.xml
+        //
+        // Every operator name across every file is rewritten to memberN (alice
+        // → member1, bob → member2, ... alphabetical for stable output). This
+        // covers: LogEntry.Operator, ScratchPage.UpdatedBy, CustomTab.CreatedBy/
+        // UpdatedBy, TeamIp.Operator, ScanUpload.Uploader. Free-text fields
+        // (log lines, scratchpad content, tab content) are also scrubbed via
+        // word-boundary regex so name leaks inside content get anonymized too.
+        // GET /download/alias-map -- returns the same operator → memberN
+        // mapping that /download/all embeds, so the UI can render a
+        // reference chart ("member1 is mustafa, member2 is alice, ...")
+        // that everyone on the team sees.
+        [HttpGet("alias-map")]
+        public async Task<ActionResult<IEnumerable<object>>> AliasMap()
+        {
+            var alias = await BuildAliasMap();
+            return alias.OrderBy(kv => kv.Value)
+                        .Select(kv => (object)new { alias = kv.Value, name = kv.Key })
+                        .ToList();
+        }
+
+        // Same alias-building logic used by DownloadAll -- kept in one place
+        // so the UI chart and the zip export never drift apart.
+        private async Task<Dictionary<string, string>> BuildAliasMap()
+        {
+            var allOps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var s in await _context.LogEntry.Select(l => l.Operator).Distinct().ToListAsync())
+                if (!string.IsNullOrEmpty(s)) allOps.Add(s);
+            foreach (var s in await _context.ScratchPage.Select(p => p.UpdatedBy).Distinct().ToListAsync())
+                if (!string.IsNullOrEmpty(s)) allOps.Add(s);
+            foreach (var s in await _context.CustomTab.Select(t => t.CreatedBy).Distinct().ToListAsync())
+                if (!string.IsNullOrEmpty(s)) allOps.Add(s);
+            foreach (var s in await _context.CustomTab.Select(t => t.UpdatedBy).Distinct().ToListAsync())
+                if (!string.IsNullOrEmpty(s)) allOps.Add(s);
+            foreach (var s in await _context.TeamIp.Select(t => t.Operator).Distinct().ToListAsync())
+                if (!string.IsNullOrEmpty(s)) allOps.Add(s);
+            foreach (var s in await _context.ScanUpload.Select(u => u.Uploader).Distinct().ToListAsync())
+                if (!string.IsNullOrEmpty(s)) allOps.Add(s);
+
+            var alias = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            int i = 1;
+            foreach (var op in allOps.OrderBy(o => o, StringComparer.OrdinalIgnoreCase))
+                alias[op] = $"member{i++}";
+            return alias;
+        }
+
+        [HttpGet("all")]
+        public async Task<IActionResult> DownloadAll()
+        {
+            var boxes = await _context.Boxes.Include(i => i.Services).ToListAsync();
+            var creds = await _context.Cred.ToListAsync();
+            var logs  = await _context.LogEntry.OrderBy(l => l.Timestamp).ToListAsync();
+            var scratch = await _context.ScratchPage.OrderBy(p => p.Title).ToListAsync();
+            var tabs = await _context.CustomTab.OrderBy(t => t.CreatedAt).ToListAsync();
+            var teamIps = await _context.TeamIp.ToListAsync();
+            var scanUploads = await _context.ScanUpload.ToListAsync();
+
+            // Build ONE alias map from every source of operator names in the
+            // DB. Alphabetical for stable output across re-runs.
+            var allOps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var l in logs)    if (!string.IsNullOrEmpty(l.Operator))  allOps.Add(l.Operator);
+            foreach (var s in scratch) if (!string.IsNullOrEmpty(s.UpdatedBy)) allOps.Add(s.UpdatedBy);
+            foreach (var t in tabs)    { if (!string.IsNullOrEmpty(t.CreatedBy)) allOps.Add(t.CreatedBy);
+                                         if (!string.IsNullOrEmpty(t.UpdatedBy)) allOps.Add(t.UpdatedBy); }
+            foreach (var t in teamIps) if (!string.IsNullOrEmpty(t.Operator))  allOps.Add(t.Operator);
+            foreach (var u in scanUploads) if (!string.IsNullOrEmpty(u.Uploader)) allOps.Add(u.Uploader);
+
+            var alias = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            int i = 1;
+            foreach (var op in allOps.OrderBy(o => o, StringComparer.OrdinalIgnoreCase))
+                alias[op] = $"member{i++}";
+
+            string A(string name)  => name != null && alias.TryGetValue(name, out var m) ? m : name;
+            string SC(string text) => ScrubText(text, alias);
+
+            var ms = new MemoryStream();
+            using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                WriteJsonEntry(zip, "boxes.json", boxes.Select(b => new {
+                    b.BoxId, b.Ip, b.Hostname, b.State, b.Os, b.Subnet, b.Standing,
+                    Comments = SC(b.Comments),
+                    Services = b.Services?.Select(s => new { s.Port, s.Protocol, s.State, s.Name, s.Version, Script = SC(s.Script) })
+                }));
+                WriteJsonEntry(zip, "credentials.json", creds.Select(c => new {
+                    c.CredId, Text = SC(c.Text), c.Type, c.Source, c.Verified, Origin = A(c.Origin)
+                }));
+                WriteJsonEntry(zip, "scratchpad.json", scratch.Select(s => new {
+                    s.ScratchPageId, s.Title, Content = SC(s.Content),
+                    UpdatedBy = A(s.UpdatedBy), s.UpdatedAt
+                }));
+                WriteJsonEntry(zip, "custom-tabs.json", tabs.Select(t => new {
+                    t.CustomTabId, t.Title, t.Icon, Content = SC(t.Content),
+                    CreatedBy = A(t.CreatedBy), t.CreatedAt,
+                    UpdatedBy = A(t.UpdatedBy), t.UpdatedAt
+                }));
+                WriteJsonEntry(zip, "team-ips.json", teamIps.Select(t => new {
+                    t.TeamIpId, Operator = A(t.Operator), t.Ip, t.FirstSeen, t.LastSeen
+                }));
+                WriteJsonEntry(zip, "scan-uploads-index.json", scanUploads.Select(s => new {
+                    s.ScanUploadId, s.FileName, Uploader = A(s.Uploader),
+                    Note = SC(s.Note), s.UploadedAt, s.SizeBytes
+                }));
+
+                // Alias map so the reader can still cross-reference if they
+                // need to (kept in a separate file so a casual glance at the
+                // per-entity files stays anonymous).
+                WriteJsonEntry(zip, "operator-alias-map.json",
+                    alias.OrderBy(kv => kv.Value).Select(kv => new { Alias = kv.Value, WasName = kv.Key }));
+
+                // Topology exports
+                var svg = TopologyRenderer.RenderSvg(boxes);
+                WriteBytesEntry(zip, "topology.svg", svg);
+                var drawio = TopologyRenderer.RenderDrawio(boxes);
+                WriteBytesEntry(zip, "topology.drawio", drawio);
+
+                // Logs XLSX (anonymized -- reuses the shared alias map so a
+                // sheet name matches the same alias used in the JSON files).
+                var xlsx = BuildLogsWorkbook(logs, alias);
+                WriteBytesEntry(zip, "logs.xlsx", xlsx);
+
+                // Raw scan XMLs (each user-uploaded scan). Skip any whose
+                // on-disk file went missing so a stray delete doesn't tank
+                // the whole export.
+                foreach (var s in scanUploads)
+                {
+                    if (string.IsNullOrEmpty(s.StoredPath) || !System.IO.File.Exists(s.StoredPath))
+                        continue;
+                    var safeName = MakeSafeFileName(s.FileName ?? $"scan-{s.ScanUploadId}.xml");
+                    var entry = zip.CreateEntry($"scans/{s.ScanUploadId}-{safeName}", CompressionLevel.Optimal);
+                    using var es = entry.Open();
+                    using var fs = System.IO.File.OpenRead(s.StoredPath);
+                    await fs.CopyToAsync(es);
+                }
+
+                // README so whoever unzips this knows what they're looking at.
+                var readme = "jVision export — " +
+                             DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'") + "\n\n" +
+                             "boxes.json                 — host inventory + services\n" +
+                             "credentials.json           — captured credentials\n" +
+                             "scratchpad.json            — shared team notes\n" +
+                             "custom-tabs.json           — user-defined nav tabs\n" +
+                             "team-ips.json              — operator connection records\n" +
+                             "scan-uploads-index.json    — metadata for the scans/ folder\n" +
+                             "topology.svg               — rendered network topology\n" +
+                             "topology.drawio            — editable topology (app.diagrams.net)\n" +
+                             "logs.xlsx                  — bash + burp logs\n" +
+                             "operator-alias-map.json    — memberN -> real name mapping\n" +
+                             "scans/                     — original uploaded nmap XMLs\n\n" +
+                             "All operator names in the per-entity files are rewritten to\n" +
+                             "member1, member2, ... — the mapping lives in operator-alias-map.json.\n" +
+                             "Raw scan XMLs under scans/ are the original nmap output and are NOT rewritten.\n";
+                WriteBytesEntry(zip, "README.txt", Encoding.UTF8.GetBytes(readme));
+            }
+
+            ms.Position = 0;
+            var name = $"jvision-{DateTime.UtcNow:yyyy-MM-dd-HHmm}.zip";
+            return File(ms.ToArray(), "application/zip", name);
+        }
+
+        // Word-boundary, case-insensitive rewrite of every alias key. Same
+        // strategy as LogsController.ScrubLine so a name embedded in freeform
+        // content ("ssh alice@bastion") becomes "ssh member1@bastion".
+        private static string ScrubText(string s, Dictionary<string, string> alias)
+        {
+            if (string.IsNullOrEmpty(s) || alias.Count == 0) return s;
+            foreach (var kv in alias)
+                s = System.Text.RegularExpressions.Regex.Replace(
+                    s, @"\b" + System.Text.RegularExpressions.Regex.Escape(kv.Key) + @"\b",
+                    kv.Value, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return s;
+        }
+
+        private static void WriteJsonEntry(ZipArchive zip, string name, object payload)
+        {
+            var entry = zip.CreateEntry(name, CompressionLevel.Optimal);
+            using var es = entry.Open();
+            using var sw = new StreamWriter(es, new UTF8Encoding(false));
+            sw.Write(JsonConvert.SerializeObject(payload, Formatting.Indented));
+        }
+
+        private static void WriteBytesEntry(ZipArchive zip, string name, byte[] bytes)
+        {
+            var entry = zip.CreateEntry(name, CompressionLevel.Optimal);
+            using var es = entry.Open();
+            es.Write(bytes, 0, bytes.Length);
+        }
+
+        private static string MakeSafeFileName(string name)
+        {
+            foreach (var c in Path.GetInvalidFileNameChars())
+                name = name.Replace(c, '_');
+            return name;
+        }
+
+        // Mirrors LogsController.Export layout (one sheet per operator, bash |
+        // burp columns). Takes an alias map so the sheet names match the
+        // memberN pseudonyms used across the rest of the zip.
+        private static byte[] BuildLogsWorkbook(List<LogEntry> all, Dictionary<string, string> sharedAlias)
+        {
+            using var wb = new XLWorkbook();
+            if (all.Count == 0)
+            {
+                wb.Worksheets.Add("logs").Cell(1, 1).Value = "no logs";
+            }
+            else
+            {
+                // If callers didn't supply an alias for an operator (e.g. logs
+                // seeded before other tables existed), fall back to a per-op
+                // pseudonym starting after the shared range.
+                var alias = new Dictionary<string, string>(sharedAlias, StringComparer.OrdinalIgnoreCase);
+                int next = alias.Count + 1;
+                foreach (var op in all.Select(l => l.Operator ?? "unknown").Distinct())
+                    if (!alias.ContainsKey(op)) alias[op] = $"member{next++}";
+
+                foreach (var g in all.GroupBy(l => l.Operator ?? "unknown"))
+                {
+                    var ws = wb.Worksheets.Add(alias[g.Key]);
+                    ws.Cell(1, 1).Value = "bash";
+                    ws.Cell(1, 2).Value = "burp";
+                    ws.Row(1).Style.Font.Bold = true;
+                    var bash = g.Where(l => l.Source == "zsh").ToList();
+                    var burp = g.Where(l => l.Source == "burp").ToList();
+                    for (int i = 0; i < bash.Count; i++)
+                        ws.Cell(i + 2, 1).Value = ScrubText($"[{bash[i].Timestamp.ToLocalTime():yyyy-MM-dd HH:mm:ss}] {bash[i].Line}", alias);
+                    for (int i = 0; i < burp.Count; i++)
+                        ws.Cell(i + 2, 2).Value = ScrubText($"[{burp[i].Timestamp.ToLocalTime():yyyy-MM-dd HH:mm:ss}] {burp[i].Line}", alias);
+                    ws.Column(1).Width = 90;
+                    ws.Column(2).Width = 90;
+                    ws.SheetView.FreezeRows(1);
+                }
+            }
+            using var ms = new MemoryStream();
+            wb.SaveAs(ms);
+            return ms.ToArray();
         }
 
         private FileResult CreateTopology(List<Box> bl)

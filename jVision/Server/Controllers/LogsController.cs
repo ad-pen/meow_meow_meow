@@ -86,6 +86,11 @@ namespace jVision.Server.Controllers
         // GET /logs/export -- one XLSX, one worksheet per operator, two columns:
         // A=bash (zsh), B=burp. Chronological, independent lists (bash and burp
         // rows don't line up by timestamp -- they're independent streams).
+        //
+        // Operator names are anonymized to member1, member2, ... so the export
+        // can be shared without leaking who did what. Mapping order is
+        // alphabetical by real operator name so re-running the export produces
+        // stable pseudonyms across the same dataset.
         [HttpGet("export")]
         public async Task<IActionResult> Export()
         {
@@ -102,9 +107,19 @@ namespace jVision.Server.Controllers
             }
             else
             {
+                var distinctOps = all
+                    .Select(l => l.Operator ?? "unknown")
+                    .Distinct()
+                    .OrderBy(o => o, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var opToAlias = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < distinctOps.Count; i++)
+                    opToAlias[distinctOps[i]] = $"member{i + 1}";
+
                 foreach (var opGroup in all.GroupBy(l => l.Operator ?? "unknown"))
                 {
-                    var ws = wb.Worksheets.Add(SafeSheetName(opGroup.Key, wb));
+                    var alias = opToAlias[opGroup.Key];
+                    var ws = wb.Worksheets.Add(SafeSheetName(alias, wb));
                     ws.Cell(1, 1).Value = "bash";
                     ws.Cell(1, 2).Value = "burp";
                     ws.Row(1).Style.Font.Bold = true;
@@ -113,9 +128,9 @@ namespace jVision.Server.Controllers
                     var burp = opGroup.Where(l => l.Source == "burp").ToList();
 
                     for (int i = 0; i < bash.Count; i++)
-                        ws.Cell(i + 2, 1).Value = FormatLine(bash[i]);
+                        ws.Cell(i + 2, 1).Value = ScrubLine(FormatLine(bash[i]), opToAlias);
                     for (int i = 0; i < burp.Count; i++)
-                        ws.Cell(i + 2, 2).Value = FormatLine(burp[i]);
+                        ws.Cell(i + 2, 2).Value = ScrubLine(FormatLine(burp[i]), opToAlias);
 
                     // AdjustToContents() calls into System.Drawing to measure
                     // text width, which needs libgdiplus at runtime -- the
@@ -138,6 +153,22 @@ namespace jVision.Server.Controllers
 
         private static string FormatLine(LogEntry l) =>
             $"[{l.Timestamp.ToLocalTime():yyyy-MM-dd HH:mm:ss}] {l.Line}";
+
+        // Rewrite any occurrence of an operator's real name inside a log line
+        // to its member-alias. Word-boundary match so "root" doesn't rewrite
+        // "root@host" partially -- we want a whole-token replacement. Case-
+        // insensitive because Windows tools uppercase user names inconsistently.
+        private static string ScrubLine(string s, Dictionary<string, string> opToAlias)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            foreach (var kv in opToAlias)
+            {
+                if (string.IsNullOrEmpty(kv.Key)) continue;
+                s = Regex.Replace(s, @"\b" + Regex.Escape(kv.Key) + @"\b",
+                                  kv.Value, RegexOptions.IgnoreCase);
+            }
+            return s;
+        }
 
         // Excel: sheet names <=31 chars, cannot contain \ / ? * [ ] :, and must
         // be unique per workbook (case-insensitive).

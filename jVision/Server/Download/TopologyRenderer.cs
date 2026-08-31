@@ -25,9 +25,9 @@ namespace jVision.Server.Download
     //  no subnet labels next to the router.
     //
     // Mapping from jVision data:
-    //   Box.Subnet -> sub-environment label (one sub-box per distinct value)
+    //   Box.Subnet -> sub-environment label (normalized to /24 if bare IP/empty)
     //   Box.Ip     -> bold label under each device
-    //   Box.Os     -> icon selector ("windows" → Windows flag, else → Linux Tux)
+    //   Box.Os/Box.Hostname -> icon selector (either field can indicate windows/linux)
     public static class TopologyRenderer
     {
         // ---- Layout constants ----
@@ -66,15 +66,82 @@ namespace jVision.Server.Download
         private static List<(string Subnet, List<Box> Hosts)> GroupBySubnet(List<Box> boxes)
         {
             return boxes
-                .GroupBy(b => string.IsNullOrEmpty(b.Subnet) ? "(no subnet)" : b.Subnet)
+                .GroupBy(b => NormalizeSubnet(b))
                 .OrderByDescending(g => g.Count())          // biggest first (best fit for 2-col grid)
                 .ThenBy(g => g.Key, StringComparer.Ordinal)
                 .Select(g => (g.Key, g.OrderBy(b => TryParseIp(b.Ip)).ToList()))
                 .ToList();
         }
 
-        private static bool IsWindows(Box b) =>
-            (b.Os ?? "").ToLowerInvariant().Contains("windows");
+        // The scan client writes whatever came from `-s ...` into Box.Subnet -- a
+        // hostname, an IP, or a CIDR. Normalize everything to a /24 network
+        // string so hosts belonging to the same /24 actually group together.
+        private static string NormalizeSubnet(Box b)
+        {
+            var raw = (b.Subnet ?? "").Trim();
+
+            // Explicit CIDR: canonicalize to the network address of that mask so
+            // "10.10.10.5/24" and "10.10.10.99/24" collapse to "10.10.10.0/24".
+            if (raw.Contains('/'))
+            {
+                var canon = CanonicalCidr(raw);
+                if (canon != null) return canon;
+            }
+
+            // Bare IP or empty -- derive a /24 from the host's IP.
+            if (!string.IsNullOrEmpty(b.Ip))
+            {
+                var parts = b.Ip.Split('.');
+                if (parts.Length == 4 && parts.All(p => byte.TryParse(p, out _)))
+                    return $"{parts[0]}.{parts[1]}.{parts[2]}.0/24";
+            }
+
+            return string.IsNullOrEmpty(raw) ? "(no subnet)" : raw;
+        }
+
+        private static string CanonicalCidr(string cidr)
+        {
+            var slash = cidr.IndexOf('/');
+            if (slash <= 0) return null;
+            var ip = cidr.Substring(0, slash);
+            if (!int.TryParse(cidr.Substring(slash + 1), out var bits) || bits < 0 || bits > 32)
+                return null;
+            var parts = ip.Split('.');
+            if (parts.Length != 4) return null;
+            var octets = new byte[4];
+            for (int i = 0; i < 4; i++)
+                if (!byte.TryParse(parts[i], out octets[i])) return null;
+            uint addr = ((uint)octets[0] << 24) | ((uint)octets[1] << 16) | ((uint)octets[2] << 8) | octets[3];
+            uint mask = bits == 0 ? 0u : 0xFFFFFFFFu << (32 - bits);
+            uint net = addr & mask;
+            return $"{(byte)(net >> 24)}.{(byte)(net >> 16)}.{(byte)(net >> 8)}.{(byte)net}/{bits}";
+        }
+
+        // OS detection: check the Os field, then fall back to hostname keywords
+        // so machines the scanner couldn't fingerprint but that carry a
+        // descriptive name (dc01, ubuntu-jump, kali-attacker) still get the
+        // right icon.
+        private static readonly string[] _winKeywords = { "windows", "microsoft" };
+        private static readonly string[] _linuxKeywords = {
+            "linux", "ubuntu", "debian", "centos", "rhel", "redhat",
+            "kali", "arch", "fedora", "suse", "alpine", "unix"
+        };
+
+        private static bool IsWindows(Box b)
+        {
+            var os = (b.Os ?? "").ToLowerInvariant();
+            var hn = (b.Hostname ?? "").ToLowerInvariant();
+            if (_winKeywords.Any(k => os.Contains(k))) return true;
+            if (_winKeywords.Any(k => hn.Contains(k))) return true;
+            // Linux keywords in the hostname take precedence over the
+            // ambiguous short prefix "win" (avoids classifying "win-ubuntu-jump"
+            // as Windows).
+            if (_linuxKeywords.Any(k => hn.Contains(k))) return false;
+            // Common short forms only if not clearly Linux.
+            if (hn.StartsWith("win") || hn.Contains("-win") || hn.Contains(" win")) return true;
+            if (hn.StartsWith("dc") || hn.Contains("exchange") || hn.Contains("srv-win")) return true;
+            return false;
+        }
 
         // ==================== layout math ====================
 

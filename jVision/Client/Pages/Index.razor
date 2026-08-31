@@ -13,6 +13,43 @@
 
 <h1>Box Count: @bCount</h1>
 
+@* Team-alias legend: the exported zip/xlsx anonymize operator names to
+   memberN. This chart tells everyone on the team who is who so no one has
+   to guess when reading the deliverable. *@
+<details style="margin: 8px 0 14px 0; padding: 8px 12px; background:#f4f6f8; border:1px solid #dee1e5; border-radius:4px;">
+    <summary style="cursor:pointer; font-weight:600;">
+        Team member aliases
+        @if (_aliasMap != null && _aliasMap.Count > 0)
+        {
+            <span class="badge badge-info" style="margin-left:6px;">@_aliasMap.Count</span>
+        }
+    </summary>
+    @if (_aliasMap == null)
+    {
+        <p class="text-muted" style="margin:6px 0 0 0;"><em>Loading&hellip;</em></p>
+    }
+    else if (_aliasMap.Count == 0)
+    {
+        <p class="text-muted" style="margin:6px 0 0 0;"><em>No operator names on file yet.</em></p>
+    }
+    else
+    {
+        <table class="table table-sm" style="margin:6px 0 0 0; width:auto; background:#fff;">
+            <thead>
+                <tr><th style="min-width:90px;">Alias</th><th>Real name</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var kv in _aliasMap)
+                {
+                    <tr>
+                        <td style="font-family:monospace; font-weight:600;">@kv.Alias</td>
+                        <td>@kv.Name</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</details>
 
 @if (boxes == null)
 {
@@ -73,7 +110,17 @@ else
                 <a href="download/topology.svg" class="btn btn-info" role="button" target="_top">Download Topology (SVG)</a>
             </div>
             <div class="p-1">
+                <button class="btn btn-info" @onclick="DownloadTopologyPng">Download Topology (PNG)</button>
+            </div>
+            <div class="p-1">
                 <a href="download/topology.drawio" class="btn btn-info" role="button" target="_top">Download Topology (drawio)</a>
+            </div>
+            <div class="p-1">
+                <a href="download/all" class="btn btn-primary" role="button" target="_top"
+                   title="Zip of every jVision artifact (boxes, logs, creds, scans, topology, custom tabs) for uploading to Drive">
+                    <span class="oi oi-cloud-download" aria-hidden="true"></span>
+                    Download Everything (zip)
+                </a>
             </div>
             <div class="p-1">
                 <CopyToClipboard Text=@string.Join("\n", filteredBoxes.Select(i=>i.Ip)) Title="Copy Host List" />
@@ -435,6 +482,10 @@ else
     private string error;
     private string requestUri = "Box";
     private string userUri = "User";
+
+    public class AliasEntry { public string Alias { get; set; } public string Name { get; set; } }
+    private List<AliasEntry> _aliasMap;
+
     protected override async Task OnInitializedAsync()
     {
         hubConnection = new HubConnectionBuilder().WithUrl(NavigationManager.ToAbsoluteUri("/boxhub")).Build();
@@ -455,6 +506,8 @@ else
             Console.WriteLine(e);
             error = "Error Encountered";
         };
+
+        _ = LoadAliasMap();
         hubConnection.On<BoxDTO>("BoxUpdated", t =>
         {
             BoxDTO updatedBox = boxes.Where(s => s.BoxId == t.BoxId).FirstOrDefault();
@@ -555,6 +608,34 @@ else
     {
         var response = await Http.PutAsJsonAsync(requestUri, bb);
         await _dialog.Close();
+    }
+
+    private async Task LoadAliasMap()
+    {
+        try
+        {
+            _aliasMap = await Http.GetFromJsonAsync<List<AliasEntry>>("download/alias-map");
+            StateHasChanged();
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("alias map load failed: " + e);
+            _aliasMap = new List<AliasEntry>();
+            StateHasChanged();
+        }
+    }
+
+    private async Task DownloadTopologyPng()
+    {
+        var name = $"topology-{DateTime.UtcNow:yyyy-MM-dd-HHmm}.png";
+        try
+        {
+            await _JSRuntime.InvokeAsync<bool>("topologyPng.download", "download/topology.svg", name, 2);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("PNG export failed: " + ex);
+        }
     }
     private async Task CloseDialog()
     {

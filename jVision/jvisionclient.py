@@ -87,13 +87,40 @@ class Beautifier:
         for host in hosts:
             json_host = {}
             json_services = []
-            addr_tag = host.find('address')
+            # Only use IPv4 <address> -- MAC addresses are also <address>
+            # elements and would otherwise clobber the IP field.
+            addr_tag = host.find('address', attrs={'addrtype': 'ipv4'}) \
+                       or host.find('address')
             json_host['ip'] = addr_tag.get('addr') if addr_tag else None
             status_tag = host.find('status')
             json_host['state'] = status_tag.get('state') if status_tag else None
-            hostname_tag = host.find('hostname')
-            json_host['hostname'] = hostname_tag.get('name') if hostname_tag else None
+            # Prefer a PTR (rDNS) name -- reverse DNS is more descriptive than
+            # any user-supplied hostname; fall back to any <hostname>.
+            hostname = None
+            hnames = host.find_all('hostname')
+            for h in hnames:
+                if (h.get('type') or '').lower() == 'ptr':
+                    hostname = h.get('name'); break
+            if hostname is None and hnames:
+                hostname = hnames[0].get('name')
+            json_host['hostname'] = hostname
             json_host['subnet'] = self.subnet
+
+            # OS fingerprint (nmap -O or smb-os-discovery). Pull the highest-
+            # accuracy osmatch; if none, look for a Windows/Linux hint in any
+            # script output (many services leak the OS in banners).
+            os_hint = None
+            osmatch = host.find('osmatch')
+            if osmatch:
+                os_hint = osmatch.get('name')
+            if not os_hint:
+                for script in host.find_all('script'):
+                    out = (script.get('output') or '').lower()
+                    if 'windows' in out:
+                        os_hint = 'Windows'; break
+                    if 'linux' in out:
+                        os_hint = 'Linux'; break
+            json_host['os'] = os_hint
 
             for p in host.find_all('port'):
                 json_port = {}
@@ -119,11 +146,19 @@ class Beautifier:
 
             json_host['services'] = json_services
 
-            # Only keep hosts that actually have an open port. A bare /24 scan
-            # returns every pingable host (routers, firewalls, IoT with zero
-            # exposed TCP), and dumping those into jVision buries the real
-            # targets. Filtered/closed-only hosts are noise for the operator.
-            if any((s.get('state') or '').lower() == 'open' for s in json_services):
+            # Keep every host that answered any probe. Ones without an open
+            # port in the scanned range still matter -- they might have an
+            # open service on a port outside the current sweep, or need a
+            # follow-up UDP/-p- scan. jVision now surfaces them so the whole
+            # attack surface is visible, not just the currently-exploitable
+            # slice.
+            has_open = any((s.get('state') or '').lower() == 'open' for s in json_services)
+            state = (json_host.get('state') or '').lower()
+            if not has_open and state == 'up':
+                # Server keys on json_host['state']; tag no-open-port survivors
+                # so the UI can style them differently without a schema change.
+                json_host['state'] = 'up (no open ports)'
+            if state == 'up' or has_open:
                 self.json_object.append(json_host)
 
     def upload_file(self):
@@ -170,15 +205,39 @@ def main():
 
     target_server = "http://{}:{}".format(args.target_ip, args.target_port)
 
+    # Host discovery is layered so a firewalled ICMP-only host or a silent
+    # Windows box with the firewall enabled still shows up:
+    #   -PE  ICMP echo               (finds anything ping-friendly)
+    #   -PP  ICMP timestamp          (some hosts reply only to this)
+    #   -PM  ICMP netmask            (older gear)
+    #   -PS  TCP SYN to popular ports (Windows/Linux services)
+    #   -PA  TCP ACK to same ports   (bypasses stateless SYN filters)
+    #   -PU  UDP probe to 53/161/137 (DNS/SNMP/NetBIOS often answer)
+    #   -PR  ARP on the local link   (auto when appropriate, listed here for
+    #        documentation; nmap ignores -PR for off-link targets)
+    # Dedup + sort so the same host isn't scanned twice when it answers to
+    # multiple probes.
+    discovery_ports = (
+        "21,22,23,25,53,80,88,110,111,135,139,143,389,443,445,"
+        "465,514,587,631,636,873,993,995,1025,1433,1521,1723,"
+        "2049,2222,3128,3306,3389,3690,5222,5432,5900,5985,5986,"
+        "6379,8000,8008,8080,8081,8443,8888,9000,9090,9200,"
+        "11211,27017"
+    )
+    ping_flags = (
+        "-PE -PP -PM "
+        "-PS{ports} -PA{ports} -PU53,161,137 -PR"
+    ).format(ports=discovery_ports)
+
     initial_scan = (
-        "nmap -n -sn -PS80,23,443,21,22,25,3389,110,445,139,143,53,135,"
-        "3306,8080,1723,111,995,993,5900,1025,587,8888 {target} "
-        "-oG - 2>&1 | awk '/Up$/{{print $2}}' > hosts_simple.txt"
-    ).format(target=args.victim_addr)
+        "nmap -n -sn {ping} {target} -oG - 2>&1 "
+        "| awk '/Up$/{{print $2}}' | sort -uV > hosts_simple.txt"
+    ).format(ping=ping_flags, target=args.victim_addr)
 
     initial_scan_v = (
-        "nmap -n -sn {target} -oG - 2>&1 | awk '/Up$/{{print $2}}' > hosts_detailed.txt"
-    ).format(target=args.victim_addr)
+        "nmap -n -sn {ping} {target} -oG - 2>&1 "
+        "| awk '/Up$/{{print $2}}' | sort -uV > hosts_detailed.txt"
+    ).format(ping=ping_flags, target=args.victim_addr)
 
     common_flags = "-n -T4 --min-rate 1000 --host-timeout 20m -Pn"
 

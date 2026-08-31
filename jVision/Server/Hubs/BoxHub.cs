@@ -24,6 +24,7 @@ namespace jVision.Server.Hubs
         Task ScratchChanged();
         Task ScanUploaded(ScanUpload s);
         Task ScanDeleted(int id);
+        Task CustomTabsChanged();
     }
     public class BoxHub : Hub<IBoxClient>
     {

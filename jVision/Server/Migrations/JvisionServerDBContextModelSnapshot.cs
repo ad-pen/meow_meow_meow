@@ -412,6 +412,39 @@ namespace jVision.Server.Migrations
                     b.ToTable("ScratchPage");
                 });
 
+            modelBuilder.Entity("jVision.Shared.Models.CustomTab", b =>
+                {
+                    b.Property<int>("CustomTabId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Content")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Icon")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("CustomTabId");
+
+                    b.ToTable("CustomTab");
+                });
+
             modelBuilder.Entity("jVision.Shared.Models.TeamIp", b =>
                 {
                     b.Property<int>("TeamIpId")
