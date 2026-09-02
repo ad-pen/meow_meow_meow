@@ -168,9 +168,13 @@ namespace jVision.Server.Download
         {
             var l = new Layout();
 
-            // Determine outer frame width: uniform sub-box width * SubCols + gaps + padding
+            // Determine outer frame width: uniform sub-box width * effective column
+            // count + gaps + padding. Effective columns adapt to the actual host
+            // count so a lone subnet (or 2) end up centered under the router
+            // instead of parked in the leftmost slot of a 3-wide grid.
             int subBoxW = SubBoxMinW;                                   // uniform
-            int innerW = subBoxW * SubCols + SubGapX * (SubCols - 1);
+            int effectiveCols = Math.Max(1, Math.Min(SubCols, Math.Max(1, grouped.Count)));
+            int innerW = subBoxW * effectiveCols + SubGapX * (effectiveCols - 1);
             l.OuterFrameW = innerW + 2 * OuterFramePad;
             l.CanvasW = Math.Max(CanvasMinW, l.OuterFrameW + 2 * OuterPadX);
 
@@ -180,43 +184,41 @@ namespace jVision.Server.Download
             l.AttackerX = (l.CanvasW - AttackerW) / 2;
             l.RouterX   = (l.CanvasW - RouterW) / 2;
 
-            // Grid-place the sub-boxes (row-major, 2 columns).
-            int contentX = l.OuterFrameX + OuterFramePad;
+            // Grid-place the sub-boxes (row-major). Each row is centered
+            // independently so a trailing partial row also sits under the router.
             int contentY = l.OuterFrameY + OuterFramePad;
-
-            int rowIdx = 0;
-            int colIdx = 0;
-            int rowH = 0;
             int yCursor = contentY;
 
-            for (int i = 0; i < grouped.Count; i++)
+            for (int rowStart = 0; rowStart < grouped.Count; rowStart += SubCols)
             {
-                int h = SubBoxH(grouped[i].Hosts.Count);
-                int x = contentX + colIdx * (subBoxW + SubGapX);
-                int y = yCursor;
-                l.SubBoxes.Add((x, y, subBoxW, h));
-
-                rowH = Math.Max(rowH, h);
-                colIdx++;
-                if (colIdx >= SubCols)
+                int rowCount = Math.Min(SubCols, grouped.Count - rowStart);
+                int rowW = subBoxW * rowCount + SubGapX * (rowCount - 1);
+                int rowStartX = (l.CanvasW - rowW) / 2;
+                int rowH = 0;
+                for (int c = 0; c < rowCount; c++)
                 {
-                    colIdx = 0;
-                    rowIdx++;
-                    yCursor += rowH + SubGapY;
-                    rowH = 0;
+                    int idx = rowStart + c;
+                    int h = SubBoxH(grouped[idx].Hosts.Count);
+                    int x = rowStartX + c * (subBoxW + SubGapX);
+                    l.SubBoxes.Add((x, yCursor, subBoxW, h));
+                    rowH = Math.Max(rowH, h);
                 }
+                yCursor += rowH + SubGapY;
             }
-            // Trailing partial row
-            int totalContentH = yCursor + rowH - contentY;
+            // Undo the trailing gap added after the last row for height math.
+            if (grouped.Count > 0) yCursor -= SubGapY;
+            int totalContentH = Math.Max(0, yCursor - contentY);
 
             l.OuterFrameH = Math.Max(200, totalContentH + 2 * OuterFramePad);
-            l.CanvasH = l.OuterFrameY + l.OuterFrameH + 60;             // 60 for figure caption
+            l.CanvasH = l.OuterFrameY + l.OuterFrameH + 20;             // trailing whitespace
             return l;
         }
 
         // ==================== SVG entry point ====================
 
-        public static byte[] RenderSvg(List<Box> boxes)
+        public static byte[] RenderSvg(List<Box> boxes) => RenderSvg(boxes, null);
+
+        public static byte[] RenderSvg(List<Box> boxes, List<jVision.Shared.Models.PivotEdge> pivotEdges)
         {
             var grouped = GroupBySubnet(boxes);
             var layout = Compute(grouped);
@@ -241,12 +243,21 @@ namespace jVision.Server.Download
 
             // No outer "Production Network" frame or label — subnets appear directly in rows.
 
-            // Sub-environments
+            // Sub-environments. Record each host's on-canvas centre so the
+            // pivot-edge overlay below can draw arrows between them.
+            var hostCentres = new Dictionary<string, (int Cx, int Cy)>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < grouped.Count; i++)
             {
                 var (subnet, hosts) = grouped[i];
                 var (x, y, w, h) = layout.SubBoxes[i];
-                sb.Append(SubEnvBox(x, y, w, h, subnet, hosts));
+                sb.Append(SubEnvBox(x, y, w, h, subnet, hosts, hostCentres));
+            }
+
+            // Attack-path arrows: only render pivots whose endpoints we actually
+            // know the coordinates for (both endpoints must be tracked hosts).
+            if (pivotEdges != null && pivotEdges.Count > 0)
+            {
+                sb.Append(PivotEdgesOverlay(pivotEdges, hostCentres));
             }
 
             // Empty state
@@ -255,26 +266,35 @@ namespace jVision.Server.Download
                 sb.Append($"<text x=\"{layout.CanvasW / 2}\" y=\"{layout.OuterFrameY + 80}\" text-anchor=\"middle\" font-size=\"14\" fill=\"#94a3b8\">No hosts discovered yet.</text>\n");
             }
 
-            // Figure caption
-            sb.Append($"<text x=\"{layout.CanvasW / 2}\" y=\"{layout.CanvasH - 20}\" text-anchor=\"middle\" font-size=\"12\" font-style=\"italic\" fill=\"#111\">jVision Network Topology — {XmlEscape(DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture))}</text>\n");
-
             sb.Append("</svg>\n");
             return Encoding.UTF8.GetBytes(sb.ToString());
         }
 
         // ==================== SVG pieces ====================
 
-        private static string Defs() => @"<defs>
-  <!-- Right-pointing polygon in local coords.  With orient=""auto"" on a
-       vertical downward line the marker x-axis maps to screen-down, so this
-       becomes a correctly downward-pointing arrowhead.
-       refX=10, refY=5 places the TIP at the line endpoint. -->
-  <marker id=""arrDown"" viewBox=""0 0 10 10"" refX=""10"" refY=""5""
+        private static string Defs()
+        {
+            var sb = new StringBuilder();
+            sb.Append("<defs>\n");
+            sb.Append(@"  <marker id=""arrDown"" viewBox=""0 0 10 10"" refX=""10"" refY=""5""
           markerWidth=""10"" markerHeight=""10"" orient=""auto"">
     <polygon points=""0 0, 10 5, 0 10"" fill=""#333""/>
   </marker>
-</defs>
-";
+");
+            // One arrowhead marker per pivot technique colour. Static id list
+            // so a rasteriser without context-stroke support (older ImageMagick)
+            // still renders correctly.
+            foreach (var colour in new[] { "#c026d3", "#dc2626", "#ea580c", "#0d9488", "#7c3aed", "#ca8a04", "#334155" })
+            {
+                var id = "arrPivot_" + colour.TrimStart('#');
+                sb.Append($@"  <marker id=""{id}"" viewBox=""0 0 10 10"" refX=""9"" refY=""5"" markerWidth=""8"" markerHeight=""8"" orient=""auto""><polygon points=""0 0, 10 5, 0 10"" fill=""{colour}""/></marker>
+");
+            }
+            sb.Append("</defs>\n");
+            return sb.ToString();
+        }
+
+        private static string PivotMarkerId(string colour) => "arrPivot_" + colour.TrimStart('#');
 
         private static string DownArrow(int cx, int y1, int y2)
         {
@@ -329,7 +349,10 @@ namespace jVision.Server.Download
         }
 
         // One dashed sub-environment box with a header bar and a grid of devices.
-        private static string SubEnvBox(int x, int y, int w, int h, string label, List<Box> hosts)
+        // hostCentres accumulates per-IP (cx, cy) coordinates so callers can
+        // draw overlay arrows (e.g. pivot edges) between hosts across subnets.
+        private static string SubEnvBox(int x, int y, int w, int h, string label, List<Box> hosts,
+                                        Dictionary<string, (int Cx, int Cy)> hostCentres = null)
         {
             var sb = new StringBuilder();
             // Container (dashed)
@@ -353,8 +376,85 @@ namespace jVision.Server.Download
                 int cellCx = gridX + col * cellSpanW + cellSpanW / 2;
                 int cellTopY = gridY + row * CellH;
                 sb.Append(DeviceCell(cellCx, cellTopY, hosts[i]));
+                if (hostCentres != null && !string.IsNullOrEmpty(hosts[i].Ip))
+                {
+                    // Centre of the icon (icon top = cellTopY, height = IconH).
+                    hostCentres[hosts[i].Ip] = (cellCx, cellTopY + IconH / 2);
+                }
             }
             return sb.ToString();
+        }
+
+        // Render a labelled arrow between every pivot whose endpoints resolve
+        // to a known host centre. Colour by technique so the report reader can
+        // scan the graph and pick out cred-based moves vs. exploit-based ones
+        // at a glance.
+        private static string PivotEdgesOverlay(List<jVision.Shared.Models.PivotEdge> edges,
+                                                Dictionary<string, (int Cx, int Cy)> hostCentres)
+        {
+            var sb = new StringBuilder();
+            foreach (var e in edges)
+            {
+                if (e == null || string.IsNullOrEmpty(e.SourceIp) || string.IsNullOrEmpty(e.TargetIp)) continue;
+                if (string.Equals(e.SourceIp, e.TargetIp, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!hostCentres.TryGetValue(e.SourceIp, out var src)) continue;
+                if (!hostCentres.TryGetValue(e.TargetIp, out var dst)) continue;
+
+                var colour = TechniqueColour(e.Technique);
+                var label = FormatPivotLabel(e);
+
+                // Curved cubic bezier so multiple arrows between the same pair
+                // don't sit on top of each other and stay legible when the
+                // endpoints share a subnet row.
+                int dx = dst.Cx - src.Cx;
+                int dy = dst.Cy - src.Cy;
+                int mx = (src.Cx + dst.Cx) / 2;
+                int my = (src.Cy + dst.Cy) / 2;
+                // Perpendicular offset for the control point; magnitude scales
+                // with distance but is capped so short-hop arrows don't loop.
+                double len = Math.Sqrt(dx * dx + dy * dy);
+                if (len < 1) continue;
+                double nx = -dy / len;
+                double ny = dx / len;
+                int bow = (int)Math.Min(60, Math.Max(18, len * 0.15));
+                int cx = (int)(mx + nx * bow);
+                int cy = (int)(my + ny * bow);
+
+                string path = string.Format(CultureInfo.InvariantCulture,
+                    "M {0} {1} Q {2} {3} {4} {5}",
+                    src.Cx, src.Cy, cx, cy, dst.Cx, dst.Cy);
+                sb.Append($"<path d=\"{path}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"2\" stroke-linecap=\"round\" marker-end=\"url(#{PivotMarkerId(colour)})\" opacity=\"0.9\"/>\n");
+
+                if (!string.IsNullOrEmpty(label))
+                {
+                    // Place label near the control-point midpoint with a small
+                    // white halo (paint-order stroke) so text stays readable
+                    // over other shapes.
+                    int lx = (src.Cx + 2 * cx + dst.Cx) / 4;
+                    int ly = (src.Cy + 2 * cy + dst.Cy) / 4;
+                    sb.Append($"<text x=\"{lx}\" y=\"{ly}\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"700\" fill=\"{colour}\" stroke=\"#ffffff\" stroke-width=\"3\" paint-order=\"stroke\">{XmlEscape(label)}</text>\n");
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static string TechniqueColour(string t) => (t ?? "").ToLowerInvariant() switch
+        {
+            "creds"   => "#c026d3",   // magenta
+            "exploit" => "#dc2626",   // red
+            "rce"     => "#ea580c",   // orange
+            "session" => "#0d9488",   // teal
+            "relay"   => "#7c3aed",   // violet
+            "phish"   => "#ca8a04",   // amber
+            _         => "#334155",   // slate
+        };
+
+        private static string FormatPivotLabel(jVision.Shared.Models.PivotEdge e)
+        {
+            var pieces = new List<string>();
+            if (!string.IsNullOrWhiteSpace(e.Technique) && e.Technique != "other") pieces.Add(e.Technique);
+            if (!string.IsNullOrWhiteSpace(e.Label)) pieces.Add(e.Label);
+            return Ellipsize(string.Join(": ", pieces), 40);
         }
 
         // A single device cell. cx = horizontal centre; top = top y.

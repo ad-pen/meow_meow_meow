@@ -25,6 +25,9 @@ namespace jVision.Shared.Models
 
         public string Subnet { get; set; }
 
+        // Progress stage (todo/enum/foothold/privesc/owned). Null = untriaged.
+        public string Stage { get; set; }
+
         public ICollection<ServiceDTO> Services { get; set; }
 
         // True if there's at least one UploadedScanHost row matching this IP,

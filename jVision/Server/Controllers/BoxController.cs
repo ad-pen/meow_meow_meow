@@ -46,6 +46,7 @@ namespace jVision.Server.Controllers
                     Standing = box.Standing,
                     Os = box.Os,
                     Subnet = box.Subnet,
+                    Stage = box.Stage,
                     Services = box.Services.Where(s => s!= null).Select(x => ServiceToDTO(x)).ToList(),
                     // Drives the "Uploaded" button visibility in Home.
                     HasUploadedScans = _context.UploadedScanHost.Any(h => h.Ip == box.Ip),
@@ -69,6 +70,9 @@ namespace jVision.Server.Controllers
                     }
                     exists.State = box.State;
                     exists.Subnet = box.Subnet;
+                    // Only overwrite Stage if the incoming DTO explicitly set it,
+                    // so a scanner rescan doesn't clobber a stage set by a user.
+                    if (!string.IsNullOrEmpty(box.Stage)) exists.Stage = box.Stage;
                     exists.Services.Clear();
                     exists.Services = box.Services?.Select(x => DTOToService(x)).ToList();
                     _context.Boxes.Update(exists);
@@ -94,6 +98,7 @@ namespace jVision.Server.Controllers
                     Standing = b.Standing,
                     Os = b.Os,
                     Subnet = b.Subnet,
+                    Stage = b.Stage,
                     Services = b.Services?.Select(x => DTOToService(x)).ToList()
                 }));
                 await _context.SaveChangesAsync();
@@ -122,6 +127,7 @@ namespace jVision.Server.Controllers
             box.Standing = boxdto.Standing;
             box.Os = boxdto.Os;
             box.Subnet = boxdto.Subnet;
+            box.Stage = boxdto.Stage;
 
             try
             {
@@ -132,6 +138,36 @@ namespace jVision.Server.Controllers
                 return NotFound();
             }
             await _hubContext.Clients.All.BoxUpdated(boxdto);
+            return NoContent();
+        }
+
+        // Stage-only update. The progress board / Home dropdown uses this so
+        // it doesn't have to round-trip the whole BoxDTO (including services)
+        // just to flip one label.
+        public class StageUpdate { public string Stage { get; set; } }
+
+        [HttpPost("{id}/stage")]
+        public async Task<IActionResult> PostStage(int id, StageUpdate body)
+        {
+            var box = await _context.Boxes.Include(b => b.Services).FirstOrDefaultAsync(b => b.BoxId == id);
+            if (box == null) return NotFound();
+            box.Stage = string.IsNullOrWhiteSpace(body?.Stage) ? null : body.Stage.Trim();
+            await _context.SaveChangesAsync();
+            var dto = new BoxDTO
+            {
+                BoxId = box.BoxId,
+                UserId = box.UserId,
+                Ip = box.Ip,
+                Hostname = box.Hostname,
+                State = box.State,
+                Comments = box.Comments,
+                Standing = box.Standing,
+                Os = box.Os,
+                Subnet = box.Subnet,
+                Stage = box.Stage,
+                Services = box.Services?.Where(s => s != null).Select(x => ServiceToDTO(x)).ToList(),
+            };
+            await _hubContext.Clients.All.BoxUpdated(dto);
             return NoContent();
         }
 

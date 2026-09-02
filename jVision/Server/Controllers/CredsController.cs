@@ -26,7 +26,9 @@ namespace jVision.Server.Controllers
 
         // Every cred must say where it came from. Enforced here as well as in
         // the UI so a direct POST can't slip an unclassified cred into the list.
-        public static readonly string[] Origins = { "Web", "AD", "Others" };
+        // "Created" is the origin used when the Created Accounts tab auto-mirrors
+        // an account into Creds.
+        public static readonly string[] Origins = { "Web", "AD", "Others", "Created" };
 
         private static string NormalizeOrigin(string o) =>
             Origins.FirstOrDefault(v => string.Equals(v, (o ?? "").Trim(), StringComparison.OrdinalIgnoreCase));

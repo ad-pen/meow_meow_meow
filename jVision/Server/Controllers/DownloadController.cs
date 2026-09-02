@@ -45,12 +45,18 @@ namespace jVision.Server.Controllers
 
         // SVG rendered directly on the server -- opens in any browser and is
         // editable in Inkscape. Meant for at-a-glance "who's where" reports.
+        // ?pivots=false strips the attack-path arrow overlay so you can get a
+        // clean network diagram (e.g. for the "environment" section of a report)
+        // and the same URL with pivots=true (or omitted) for the "attack story"
+        // section.
         [HttpGet("topology.svg")]
-        public IActionResult DownloadTopologySvg()
+        public IActionResult DownloadTopologySvg([FromQuery] bool pivots = true)
         {
             var boxes = _context.Boxes.Include(i => i.Services).ToList();
-            var bytes = TopologyRenderer.RenderSvg(boxes);
-            return File(bytes, "image/svg+xml", "topology.svg");
+            var edges = pivots ? _context.PivotEdge.ToList() : null;
+            var bytes = TopologyRenderer.RenderSvg(boxes, edges);
+            var name = pivots ? "topology.svg" : "topology-plain.svg";
+            return File(bytes, "image/svg+xml", name);
         }
 
         // Standalone draw.io file (mxGraphModel already laid out) -- unlike the
@@ -178,7 +184,8 @@ namespace jVision.Server.Controllers
                     alias.OrderBy(kv => kv.Value).Select(kv => new { Alias = kv.Value, WasName = kv.Key }));
 
                 // Topology exports
-                var svg = TopologyRenderer.RenderSvg(boxes);
+                var edges = _context.PivotEdge.ToList();
+                var svg = TopologyRenderer.RenderSvg(boxes, edges);
                 WriteBytesEntry(zip, "topology.svg", svg);
                 var drawio = TopologyRenderer.RenderDrawio(boxes);
                 WriteBytesEntry(zip, "topology.drawio", drawio);

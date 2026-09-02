@@ -118,6 +118,7 @@
             <div class="shadow boxie" style="padding:20px;">
                 @foreach (var c in CredsOfType(col.Type))
                 {
+                    var used = _usagesByCred.TryGetValue(c.CredId, out var uList) ? uList : new List<CredUsage>();
                     <div class="d-flex align-items-start" style="gap:6px; padding:4px 0; border-bottom:1px solid #eee;">
                         <div class="p-1">
                             <input type="checkbox" checked="@c.Verified"
@@ -128,6 +129,15 @@
                             <div style="@(c.Verified ? "font-weight:600;" : "")">
                                 <span class="badge @OriginBadge(c.Origin)"
                                       style="margin-right:6px;">@(c.Origin ?? "?")</span>@c.Text
+                                @if (used.Count > 0)
+                                {
+                                    var validN = used.Count(u => u.Status == "valid");
+                                    var invalidN = used.Count(u => u.Status == "invalid");
+                                    <span title="tried on @used.Count host(s)" style="margin-left:6px; font-size:11px; color:#5a6674;">
+                                        @if (validN > 0) { <span style="color:#1a7f37;">✓@validN</span> }
+                                        @if (invalidN > 0) { <span style="color:#c4271a; margin-left:4px;">✗@invalidN</span> }
+                                    </span>
+                                }
                             </div>
                             @if (!string.IsNullOrEmpty(c.Source))
                             {
@@ -141,12 +151,78 @@
                             </button>
                         </div>
                         <div class="p-1">
+                            <button class="btn btn-sm @(( _expandedCred == c.CredId ) ? "btn-primary" : "btn-outline-primary")"
+                                    title="track where this cred works"
+                                    @onclick="@(() => ToggleUsages(c))">
+                                <span class="oi oi-target"></span>
+                            </button>
+                        </div>
+                        <div class="p-1">
                             <button class="btn btn-sm btn-outline-danger" title="delete"
                                     @onclick="@(() => DeleteCred(c))">
                                 <span class="oi oi-trash"></span>
                             </button>
                         </div>
                     </div>
+                    @if (_expandedCred == c.CredId)
+                    {
+                        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px; padding:8px; margin:4px 0 8px 0;">
+                            <div style="font-weight:600; font-size:12px; margin-bottom:6px;">Where this credential works</div>
+                            @if (used.Count == 0)
+                            {
+                                <div class="text-muted" style="font-size:12px;"><em>No usage logged yet.</em></div>
+                            }
+                            else
+                            {
+                                <table class="table table-sm" style="margin-bottom:8px;">
+                                    <thead>
+                                        <tr>
+                                            <th>Host</th>
+                                            <th>Service</th>
+                                            <th>Port</th>
+                                            <th>Status</th>
+                                            <th>Notes</th>
+                                            <th></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var u in used)
+                                        {
+                                            <tr>
+                                                <td style="font-family:monospace;">@u.Ip</td>
+                                                <td>@u.ServiceName</td>
+                                                <td>@u.Port</td>
+                                                <td><span class="badge @StatusBadge(u.Status)">@u.Status</span></td>
+                                                <td style="font-size:12px;">@u.Notes</td>
+                                                <td>
+                                                    <button class="btn btn-sm btn-link text-danger"
+                                                            @onclick="@(() => DeleteUsage(c, u))">
+                                                        <span class="oi oi-x"></span>
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            }
+                            <div class="d-flex" style="gap:4px; flex-wrap:wrap; align-items:center;">
+                                <select class="form-select form-select-sm" style="width:auto;" @bind="_newUsage.Ip">
+                                    <option value="">host…</option>
+                                    @foreach (var b in _boxes) { <option value="@b.Ip">@b.Ip @b.Hostname</option> }
+                                </select>
+                                <input class="form-control form-control-sm" style="width:120px;" placeholder="service" @bind="_newUsage.ServiceName" />
+                                <input class="form-control form-control-sm" style="width:70px;" type="number" placeholder="port" @bind="_newUsage.Port" />
+                                <select class="form-select form-select-sm" style="width:auto;" @bind="_newUsage.Status">
+                                    <option value="valid">valid</option>
+                                    <option value="invalid">invalid</option>
+                                    <option value="untested">untested</option>
+                                </select>
+                                <input class="form-control form-control-sm" style="flex:1; min-width:120px;" placeholder="notes" @bind="_newUsage.Notes" />
+                                <button class="btn btn-sm btn-success" @onclick="@(() => AddUsage(c))"
+                                        disabled="@string.IsNullOrWhiteSpace(_newUsage.Ip)">Log</button>
+                            </div>
+                        </div>
+                    }
                 }
             </div>
         </div>
@@ -219,14 +295,75 @@
 
     private static string OriginBadge(string origin) => origin switch
     {
-        "Web"    => "badge-info",
-        "AD"     => "badge-warning",
-        "Others" => "badge-secondary",
-        _        => "badge-light",
+        "Web"     => "badge-info",
+        "AD"      => "badge-warning",
+        "Others"  => "badge-secondary",
+        "Created" => "badge-success",
+        _         => "badge-light",
     };
 
     private IEnumerable<Cred> CredsOfType(string t) =>
         creds.Where(c => c != null && c.Type == t && MatchesFilter(c, _filter));
+
+    // (Password tracker) per-cred usage tracking.
+    private Dictionary<int, List<CredUsage>> _usagesByCred = new();
+    private List<BoxDTO> _boxes = new();
+    private int? _expandedCred;
+    private CredUsage _newUsage = new() { Status = "valid" };
+
+    private static string StatusBadge(string s) => s switch
+    {
+        "valid"    => "badge-success",
+        "invalid"  => "badge-danger",
+        "untested" => "badge-secondary",
+        _          => "badge-light",
+    };
+
+    private async Task ToggleUsages(Cred c)
+    {
+        if (_expandedCred == c.CredId)
+        {
+            _expandedCred = null;
+            return;
+        }
+        _expandedCred = c.CredId;
+        _newUsage = new CredUsage { CredId = c.CredId, Status = "valid" };
+        await LoadUsagesFor(c.CredId);
+        if (_boxes.Count == 0)
+        {
+            try { _boxes = await Http.GetFromJsonAsync<List<BoxDTO>>("box"); } catch { }
+        }
+    }
+
+    private async Task LoadUsagesFor(int credId)
+    {
+        try
+        {
+            var list = await Http.GetFromJsonAsync<List<CredUsage>>($"credusages?credId={credId}");
+            _usagesByCred[credId] = list ?? new List<CredUsage>();
+        }
+        catch { _usagesByCred[credId] = new List<CredUsage>(); }
+    }
+
+    private async Task AddUsage(Cred c)
+    {
+        _newUsage.CredId = c.CredId;
+        // Resolve BoxId from Ip if the user picked one of the known hosts.
+        var match = _boxes.FirstOrDefault(b => b.Ip == _newUsage.Ip);
+        if (match != null) _newUsage.BoxId = match.BoxId;
+        var resp = await Http.PostAsJsonAsync("credusages", _newUsage);
+        if (resp.IsSuccessStatusCode)
+        {
+            _newUsage = new CredUsage { CredId = c.CredId, Status = "valid" };
+            await LoadUsagesFor(c.CredId);
+        }
+    }
+
+    private async Task DeleteUsage(Cred c, CredUsage u)
+    {
+        await Http.DeleteAsync($"credusages/{u.CredUsageId}");
+        await LoadUsagesFor(c.CredId);
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -250,7 +387,17 @@
         {
             var yo = creds.FirstOrDefault(c => c.CredId == id);
             if (yo != null) creds.Remove(yo);
+            if (_expandedCred == id) _expandedCred = null;
+            _usagesByCred.Remove(id);
             InvokeAsync(StateHasChanged);
+        });
+        hubConnection.On("CredUsagesChanged", async () =>
+        {
+            if (_expandedCred is int id)
+            {
+                await LoadUsagesFor(id);
+                await InvokeAsync(StateHasChanged);
+            }
         });
         await hubConnection.StartAsync();
         try

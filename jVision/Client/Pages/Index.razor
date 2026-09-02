@@ -107,10 +107,20 @@ else
                 <a href="download/topology" class="btn btn-info" role="button" target="_top">Download Topology (drawio csv)</a>
             </div>
             <div class="p-1">
-                <a href="download/topology.svg" class="btn btn-info" role="button" target="_top">Download Topology (SVG)</a>
+                <div class="btn-group" role="group" aria-label="Topology with arrows">
+                    <a href="download/topology.svg" class="btn btn-info" role="button" target="_top"
+                       title="topology.svg with pivot arrows overlaid">With arrows (SVG)</a>
+                    <button class="btn btn-info" @onclick="() => DownloadTopologyPng(true)"
+                            title="topology with arrows, rasterised to PNG">PNG</button>
+                </div>
             </div>
             <div class="p-1">
-                <button class="btn btn-info" @onclick="DownloadTopologyPng">Download Topology (PNG)</button>
+                <div class="btn-group" role="group" aria-label="Plain topology">
+                    <a href="download/topology.svg?pivots=false" class="btn btn-secondary" role="button" target="_top"
+                       title="topology.svg without pivot arrows">Plain (SVG)</a>
+                    <button class="btn btn-secondary" @onclick="() => DownloadTopologyPng(false)"
+                            title="plain topology rasterised to PNG">PNG</button>
+                </div>
             </div>
             <div class="p-1">
                 <a href="download/topology.drawio" class="btn btn-info" role="button" target="_top">Download Topology (drawio)</a>
@@ -327,11 +337,14 @@ else
                 break;
         }
 
-        <CollapsePanel style="margin-bottom: 10px;" CollapsedColor="@_accordionCollapsedColor" Animate="false" ExpandedColor="@_accordionExpandedColor" HoverColor="@_accordionHoverColor" ShowContentOverflow="true" ContentHeight="0">
+        <CollapsePanel style="margin-bottom: 10px;" CollapsedColor="@_accordionCollapsedColor" Animate="false" ExpandedColor="@_accordionExpandedColor" HoverColor="@_accordionHoverColor" ShowContentOverflow="true" ContentHeight="0" OnCollapseChanged="@(collapsed => OnBoxCollapseChanged(box.BoxId, collapsed))">
             <CollapsedHeaderContent>
 
                 <div class="p-2 mr-auto"><h5>@box.Hostname | @box.Ip</h5></div>
 
+                <div class="p-2" @onclick:stopPropagation="true" @onclick:preventDefault="true">
+                    @StageChip(box)
+                </div>
                 <div class="p-1">
                     <button @onclick:stopPropagation="true" @onclick:preventDefault="true" class="btn btn-success p-2 align-middle" @onclick="(() => OpenDialog(box, users))">Edit</button>
                 </div>
@@ -355,6 +368,10 @@ else
 
                 <div class="p-2 mr-auto"><h5>@box.Hostname | @box.Ip</h5></div>
 
+                <div class="p-2" @onclick:stopPropagation="true" @onclick:preventDefault="true">
+                    @StageChip(box)
+                </div>
+                @PresenceChip(box.BoxId)
                 <div class="p-1">
                     <button @onclick:stopPropagation="true" @onclick:preventDefault="true" class="btn btn-success p-2 align-middle" @onclick="(() => OpenDialog(box, users))">Edit</button>
                 </div>
@@ -448,6 +465,105 @@ else
     private string _modalTitle = "Edit Box";
     private string _yourName;
 
+    [CascadingParameter] Task<AuthenticationState> AuthenticationState { get; set; }
+
+    // (Progress board) mirror of Board.razor.Stages so the chip dropdown here
+    // stays consistent.
+    private static readonly (string Key, string Label, string Bg, string Fg)[] _stages =
+    {
+        ("todo",     "To-scan",     "#e5eaf0", "#39485a"),
+        ("enum",     "Enumerating", "#d6e5ff", "#1e3a6b"),
+        ("foothold", "Foothold",    "#ffe9b3", "#6b4b0f"),
+        ("privesc",  "Priv-esc",    "#ffcbcb", "#7f2020"),
+        ("owned",    "Owned",       "#c9ecc9", "#1a4d1a"),
+    };
+
+    private static string NormStage(string s) => string.IsNullOrWhiteSpace(s) ? "todo" : s.Trim().ToLowerInvariant();
+
+    private RenderFragment StageChip(BoxDTO box) => builder =>
+    {
+        var cur = _stages.FirstOrDefault(s => s.Key == NormStage(box.Stage));
+        if (cur == default) cur = _stages[0];
+        builder.OpenElement(0, "select");
+        builder.AddAttribute(1, "class", "form-select form-select-sm");
+        builder.AddAttribute(2, "style", $"width:auto; display:inline-block; background:{cur.Bg}; color:{cur.Fg}; border-color:{cur.Fg}; font-weight:600;");
+        builder.AddAttribute(3, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e => ChangeStage(box, e.Value?.ToString())));
+        int i = 10;
+        foreach (var s in _stages)
+        {
+            builder.OpenElement(i++, "option");
+            builder.AddAttribute(i++, "value", s.Key);
+            if (s.Key == cur.Key) builder.AddAttribute(i++, "selected", true);
+            builder.AddContent(i++, s.Label);
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+    };
+
+    private async Task ChangeStage(BoxDTO box, string newStage)
+    {
+        var resp = await Http.PostAsJsonAsync($"box/{box.BoxId}/stage", new { Stage = newStage });
+        if (resp.IsSuccessStatusCode)
+        {
+            box.Stage = newStage;
+        }
+    }
+
+    // (Presence) map of boxId -> list of user names currently viewing.
+    private Dictionary<int, List<string>> _presence = new();
+
+    private RenderFragment PresenceChip(int boxId) => builder =>
+    {
+        if (!_presence.TryGetValue(boxId, out var users) || users == null || users.Count == 0) return;
+        // Filter yourself out — showing "you're here" is noise.
+        var others = users.Where(u => !string.Equals(u, _yourName, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (others.Count == 0) return;
+        builder.OpenElement(0, "div");
+        builder.AddAttribute(1, "class", "p-2");
+        builder.AddAttribute(2, "title", string.Join(", ", others) + " viewing this box");
+        int i = 10;
+        foreach (var u in others.Take(4))
+        {
+            var initials = string.IsNullOrEmpty(u) ? "?" : (u.Length >= 2 ? u.Substring(0, 2) : u).ToUpperInvariant();
+            builder.OpenElement(i++, "span");
+            builder.AddAttribute(i++, "style", "display:inline-block; width:26px; height:26px; border-radius:50%; background:#4b6fbb; color:#fff; text-align:center; line-height:26px; font-size:11px; font-weight:700; margin-right:-6px; border:2px solid #fff;");
+            builder.AddContent(i++, initials);
+            builder.CloseElement();
+        }
+        if (others.Count > 4)
+        {
+            builder.OpenElement(i++, "span");
+            builder.AddAttribute(i++, "style", "margin-left:12px; color:#4b6fbb; font-weight:600;");
+            builder.AddContent(i++, $"+{others.Count - 4}");
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+    };
+
+    private HashSet<int> _expandedBoxes = new();
+
+    private async Task OnBoxCollapseChanged(int boxId, bool collapsed)
+    {
+        // CollapsePanel fires `collapsed` as the *new* state (true = collapsed
+        // after this event). So on true we leave the presence group, on false
+        // we join it.
+        if (hubConnection == null) return;
+        try
+        {
+            if (collapsed)
+            {
+                _expandedBoxes.Remove(boxId);
+                await hubConnection.SendAsync("LeaveBox", boxId);
+            }
+            else
+            {
+                _expandedBoxes.Add(boxId);
+                await hubConnection.SendAsync("JoinBox", boxId, _yourName ?? "anon");
+            }
+        }
+        catch { /* hub not ready — presence is nice-to-have */ }
+    }
+
     //Collapse
 
     private string _collapsedColor = "DodgerBlue";
@@ -488,7 +604,19 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        try
+        {
+            var authState = AuthenticationState != null ? await AuthenticationState : null;
+            _yourName = authState?.User?.Identity?.Name;
+        }
+        catch { /* auth optional for hub connect */ }
+
         hubConnection = new HubConnectionBuilder().WithUrl(NavigationManager.ToAbsoluteUri("/boxhub")).Build();
+        hubConnection.On<int, List<string>>("BoxPresenceChanged", (boxId, users) =>
+        {
+            _presence[boxId] = users ?? new List<string>();
+            InvokeAsync(StateHasChanged);
+        });
         await hubConnection.StartAsync();
 
         try
@@ -625,12 +753,14 @@ else
         }
     }
 
-    private async Task DownloadTopologyPng()
+    private async Task DownloadTopologyPng(bool pivots)
     {
-        var name = $"topology-{DateTime.UtcNow:yyyy-MM-dd-HHmm}.png";
+        var stamp = DateTime.UtcNow.ToString("yyyy-MM-dd-HHmm");
+        var name = pivots ? $"topology-{stamp}.png" : $"topology-plain-{stamp}.png";
+        var url = pivots ? "download/topology.svg" : "download/topology.svg?pivots=false";
         try
         {
-            await _JSRuntime.InvokeAsync<bool>("topologyPng.download", "download/topology.svg", name, 2);
+            await _JSRuntime.InvokeAsync<bool>("topologyPng.download", url, name, 2);
         }
         catch (Exception ex)
         {

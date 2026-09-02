@@ -23,7 +23,11 @@ namespace jVision.Server.Models
 
         public string Subnet { get; set; }
 
+        // Progress stage in the engagement (todo/enum/foothold/privesc/owned).
+        // Null = not yet triaged. Nullable string so existing rows migrate cleanly.
+        public string Stage { get; set; }
+
         public IList<Service> Services { get; set; }
-        
+
     }
 }

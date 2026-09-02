@@ -1,0 +1,122 @@
+@page "/board"
+@using jVision.Shared.Models
+@using System.Net.Http.Json
+@using Microsoft.AspNetCore.SignalR.Client
+@inject HttpClient Http
+@inject NavigationManager NavigationManager
+@implements IAsyncDisposable
+
+<div class="d-flex align-items-center" style="gap:12px; margin-bottom:8px;">
+    <h3 style="margin:0; flex:1;">Progress Board</h3>
+    <button class="btn btn-primary" @onclick="Load">Refresh</button>
+</div>
+<p class="text-muted" style="margin-bottom:16px;">
+    Every box's stage in the engagement. Move a box by clicking its stage chip.
+</p>
+
+@if (_error != null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@if (_boxes == null)
+{
+    <p><em>Loading&hellip;</em></p>
+}
+else
+{
+    <div style="display:grid; grid-template-columns: repeat(@Stages.Length, minmax(180px, 1fr)); gap:12px;">
+        @foreach (var stage in Stages)
+        {
+            var rows = _boxes.Where(b => Norm(b.Stage) == stage.Key).OrderBy(b => b.Ip).ToList();
+            <div style="background:@stage.BgColor; border:1px solid @stage.BorderColor; border-radius:6px; padding:8px;">
+                <div style="font-weight:700; color:@stage.TextColor; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                    <span>@stage.Label</span>
+                    <span style="background:#ffffff88; color:#333; border-radius:10px; padding:1px 8px; font-size:11px;">@rows.Count</span>
+                </div>
+                @foreach (var b in rows)
+                {
+                    <div style="background:white; border:1px solid #dde3ea; border-radius:4px; padding:6px 8px; margin-bottom:6px;">
+                        <div style="font-family:monospace; font-weight:600; font-size:13px;">@b.Ip</div>
+                        @if (!string.IsNullOrEmpty(b.Hostname))
+                        {
+                            <div style="font-size:12px; color:#5a6674;">@b.Hostname</div>
+                        }
+                        <div style="margin-top:4px;">
+                            <select class="form-select form-select-sm" style="font-size:12px; padding:1px 4px;"
+                                    @onchange="e => ChangeStage(b, e.Value?.ToString())">
+                                @foreach (var s in Stages)
+                                {
+                                    <option value="@s.Key" selected="@(Norm(b.Stage) == s.Key)">@s.Label</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+                }
+                @if (rows.Count == 0)
+                {
+                    <div style="color:#93a1b1; font-style:italic; font-size:12px; padding:4px;">empty</div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    public record Stage(string Key, string Label, string BgColor, string BorderColor, string TextColor);
+
+    // Ordered left→right to read as a pipeline. "todo" catches every box with
+    // a null/unknown stage so the count adds up to the box total.
+    public static readonly Stage[] Stages = new[]
+    {
+        new Stage("todo",     "To-scan",     "#eef2f6", "#c9d3df", "#39485a"),
+        new Stage("enum",     "Enumerating", "#e3edff", "#b6ccff", "#25406b"),
+        new Stage("foothold", "Foothold",    "#fff3d6", "#f0d78a", "#7a5a12"),
+        new Stage("privesc",  "Priv-esc",    "#ffe0e0", "#f2a5a5", "#7f2020"),
+        new Stage("owned",    "Owned",       "#dcf4dc", "#8fce8f", "#215e21"),
+    };
+
+    private List<BoxDTO> _boxes;
+    private string _error;
+    private HubConnection _hub;
+
+    private static string Norm(string s) => string.IsNullOrWhiteSpace(s) ? "todo" : s.Trim().ToLowerInvariant();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Load();
+        _hub = new HubConnectionBuilder()
+            .WithUrl(NavigationManager.ToAbsoluteUri("/boxhub"))
+            .WithAutomaticReconnect()
+            .Build();
+        _hub.On("BoxAdded", async () => { await Load(); await InvokeAsync(StateHasChanged); });
+        _hub.On<BoxDTO>("BoxUpdated", updated =>
+        {
+            var i = _boxes.FindIndex(b => b.BoxId == updated.BoxId);
+            if (i >= 0) _boxes[i] = updated;
+            InvokeAsync(StateHasChanged);
+        });
+        try { await _hub.StartAsync(); } catch { }
+    }
+
+    private async Task Load()
+    {
+        try { _boxes = await Http.GetFromJsonAsync<List<BoxDTO>>("box"); _error = null; }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+
+    private async Task ChangeStage(BoxDTO b, string newStage)
+    {
+        var payload = new { Stage = newStage };
+        var resp = await Http.PostAsJsonAsync($"box/{b.BoxId}/stage", payload);
+        if (!resp.IsSuccessStatusCode)
+        {
+            _error = $"stage change failed: {(int)resp.StatusCode}";
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hub != null) await _hub.DisposeAsync();
+    }
+}

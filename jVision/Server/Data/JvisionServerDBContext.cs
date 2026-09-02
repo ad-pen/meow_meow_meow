@@ -32,6 +32,12 @@ namespace jVision.Server.Data
 
         public DbSet<CustomTab> CustomTab { get; set; }
 
+        public DbSet<CreatedAccount> CreatedAccount { get; set; }
+
+        public DbSet<PivotEdge> PivotEdge { get; set; }
+
+        public DbSet<CredUsage> CredUsage { get; set; }
+
         protected override void OnModelCreating(ModelBuilder builder)
         {
             base.OnModelCreating(builder);
@@ -41,6 +47,19 @@ namespace jVision.Server.Data
             builder.Entity<TeamIp>()
                 .HasIndex(t => new { t.Operator, t.Ip })
                 .IsUnique();
+
+            // Speed up cred-usage lookups: "for this cred, where has it been
+            // tried?" and "for this box, what creds have been tried here?"
+            builder.Entity<CredUsage>().HasIndex(u => u.CredId);
+            builder.Entity<CredUsage>().HasIndex(u => u.BoxId);
+
+            // Pivot lookups by either endpoint.
+            builder.Entity<PivotEdge>().HasIndex(p => p.SourceIp);
+            builder.Entity<PivotEdge>().HasIndex(p => p.TargetIp);
+
+            // Created accounts frequently listed per host.
+            builder.Entity<CreatedAccount>().HasIndex(a => a.BoxId);
+            builder.Entity<CreatedAccount>().HasIndex(a => a.Ip);
         }
     }
 }

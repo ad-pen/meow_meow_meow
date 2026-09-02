@@ -227,6 +227,9 @@ namespace jVision.Server.Migrations
                     b.Property<string>("Os")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Stage")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Standing")
                         .HasColumnType("TEXT");
 
@@ -498,6 +501,132 @@ namespace jVision.Server.Migrations
                     b.HasIndex("ScanUploadId");
 
                     b.ToTable("UploadedScanHost");
+                });
+
+            modelBuilder.Entity("jVision.Shared.Models.CreatedAccount", b =>
+                {
+                    b.Property<int>("CreatedAccountId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("BoxId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Ip")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("LinkedCredId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Password")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Privilege")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Service")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("CreatedAccountId");
+
+                    b.HasIndex("BoxId");
+
+                    b.HasIndex("Ip");
+
+                    b.ToTable("CreatedAccount");
+                });
+
+            modelBuilder.Entity("jVision.Shared.Models.PivotEdge", b =>
+                {
+                    b.Property<int>("PivotEdgeId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("CredId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Label")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("SourceIp")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TargetIp")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Technique")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("PivotEdgeId");
+
+                    b.HasIndex("SourceIp");
+
+                    b.HasIndex("TargetIp");
+
+                    b.ToTable("PivotEdge");
+                });
+
+            modelBuilder.Entity("jVision.Shared.Models.CredUsage", b =>
+                {
+                    b.Property<int>("CredUsageId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("BoxId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("CredId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Ip")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Notes")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("Port")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ServiceName")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Status")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("TestedAt")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("TestedBy")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("CredUsageId");
+
+                    b.HasIndex("BoxId");
+
+                    b.HasIndex("CredId");
+
+                    b.ToTable("CredUsage");
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<string>", b =>
