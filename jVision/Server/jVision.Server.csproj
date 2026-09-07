@@ -29,5 +29,11 @@
     <ProjectReference Include="..\Shared\jVision.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Static image assets embedded (base64) into the SVG renderers. -->
+    <Content Include="Assets\tux.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
 </Project>

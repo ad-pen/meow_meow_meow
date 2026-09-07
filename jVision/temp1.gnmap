@@ -1,20 +1,4 @@
-# Nmap 7.94SVN scan initiated Wed Aug  5 21:30:13 2026 as: nmap -n -T4 --min-rate 1000 --host-timeout 20m -Pn -iL hosts_simple.txt --exclude-ports 102,502,789,1911,4911,1962,2222,4840,5450,9600,20000,20001,34962,34963,34964,44818,47808 -oA temp1
-Host: 192.168.100.1 ()	Status: Up
-Host: 192.168.100.1 ()	Ports: 21/filtered/tcp//ftp///, 22/filtered/tcp//ssh///, 23/filtered/tcp//telnet///, 53/open/tcp//domain///, 80/open/tcp//http///, 8022/filtered/tcp//oa-system///	Ignored State: closed (994)
-Host: 192.168.100.13 ()	Status: Up
-Host: 192.168.100.13 ()	Ports: 21/open/tcp//ftp///, 3389/open/tcp//ms-wbt-server///, 7070/open/tcp//realserver///	Ignored State: closed (997)
-Host: 192.168.100.14 ()	Status: Up
-Host: 192.168.100.14 ()	Ports: 8001/open/tcp//vcom-tunnel///, 8002/open/tcp//teradataordbms///, 8080/open/tcp//http-proxy///	Ignored State: closed (997)
-Host: 192.168.100.16 ()	Status: Up
-Host: 192.168.100.16 ()	Ports: 
-Host: 192.168.100.22 ()	Status: Up
-Host: 192.168.100.22 ()	Ports: 80/open/tcp//http///, 7070/open/tcp//realserver///, 7777/open/tcp//cbt///	Ignored State: closed (997)
-Host: 192.168.100.51 ()	Status: Up
-Host: 192.168.100.51 ()	Ports: 	Ignored State: closed (1000)
-Host: 192.168.100.103 ()	Status: Up
-Host: 192.168.100.103 ()	Ports: 49152/open/tcp/////, 62078/open/tcp//iphone-sync///	Ignored State: closed (998)
-Host: 192.168.100.174 ()	Status: Up
-Host: 192.168.100.174 ()	Ports: 49152/open/tcp/////, 62078/open/tcp//iphone-sync///	Ignored State: closed (998)
-Host: 192.168.100.176 ()	Status: Up
-Host: 192.168.100.176 ()	Ports: 	Ignored State: closed (1000)
-# Nmap done at Wed Aug  5 21:30:25 2026 -- 9 IP addresses (9 hosts up) scanned in 11.90 seconds
+# Nmap 7.94SVN scan initiated Wed Sep  2 11:34:24 2026 as: nmap -n -T4 --min-rate 1000 --host-timeout 20m -Pn -iL hosts_simple.txt --exclude-ports 102,502,789,1911,4911,1962,2222,4840,5450,9600,20000,20001,34962,34963,34964,44818,47808 -oA temp1
+Host: 10.10.10.5 ()	Status: Up
+Host: 10.10.10.5 ()	Ports: 53/open/tcp//domain///, 88/open/tcp//kerberos-sec///, 135/open/tcp//msrpc///, 139/open/tcp//netbios-ssn///, 389/open/tcp//ldap///, 445/open/tcp//microsoft-ds///, 464/open/tcp//kpasswd5///, 3268/open/tcp//globalcatLDAP///, 3269/open/tcp//globalcatLDAPssl///	Ignored State: closed (991)
+# Nmap done at Wed Sep  2 11:34:27 2026 -- 1 IP address (1 host up) scanned in 2.76 seconds

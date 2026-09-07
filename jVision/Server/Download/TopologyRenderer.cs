@@ -58,6 +58,12 @@ namespace jVision.Server.Download
         private const int SubGapX = 25, SubGapY = 20;
         private const int SubCols = 3;                     // 3 subnet columns (row-wise layout)
 
+        // Vertical spacing between pivot-arrow lanes in the channel below the
+        // subnet row. Must clear the pill-label height (~24px) with headroom.
+        private const int PivotLaneSpacing = 32;
+        private const int PivotCornerRadius = 8;
+        private const int PivotChannelGap = 30;            // gap from bottom of subnet row to first lane
+
         // ==================== data grouping ====================
 
         private static Version TryParseIp(string ip) =>
@@ -223,6 +229,17 @@ namespace jVision.Server.Download
             var grouped = GroupBySubnet(boxes);
             var layout = Compute(grouped);
 
+            // Pivot arrows route through a horizontal channel below the subnet
+            // row. Reserve one lane per edge so parallel arrows never overlap,
+            // and grow the canvas to fit them + their pill labels.
+            int pivotCount = pivotEdges?.Count(e => e != null && !string.IsNullOrEmpty(e.SourceIp)
+                                                    && !string.IsNullOrEmpty(e.TargetIp)
+                                                    && !string.Equals(e.SourceIp, e.TargetIp, StringComparison.OrdinalIgnoreCase)) ?? 0;
+            if (pivotCount > 0)
+            {
+                layout.CanvasH += 30 + pivotCount * PivotLaneSpacing + 20;
+            }
+
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
             sb.Append($"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{layout.CanvasW}\" height=\"{layout.CanvasH}\" viewBox=\"0 0 {layout.CanvasW} {layout.CanvasH}\" font-family=\"Arial, Helvetica, sans-serif\">\n");
@@ -243,21 +260,29 @@ namespace jVision.Server.Download
 
             // No outer "Production Network" frame or label — subnets appear directly in rows.
 
-            // Sub-environments. Record each host's on-canvas centre so the
-            // pivot-edge overlay below can draw arrows between them.
+            // Sub-environments. Record each host's on-canvas centre plus the
+            // sub-box its icon lives in so the pivot-edge overlay can route
+            // arrows around subnet frames instead of straight through them.
             var hostCentres = new Dictionary<string, (int Cx, int Cy)>(StringComparer.OrdinalIgnoreCase);
+            var hostSubBox  = new Dictionary<string, (int X, int Y, int W, int H)>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < grouped.Count; i++)
             {
                 var (subnet, hosts) = grouped[i];
                 var (x, y, w, h) = layout.SubBoxes[i];
                 sb.Append(SubEnvBox(x, y, w, h, subnet, hosts, hostCentres));
+                foreach (var host in hosts)
+                {
+                    if (!string.IsNullOrEmpty(host.Ip))
+                        hostSubBox[host.Ip] = (x, y, w, h);
+                }
             }
 
             // Attack-path arrows: only render pivots whose endpoints we actually
             // know the coordinates for (both endpoints must be tracked hosts).
             if (pivotEdges != null && pivotEdges.Count > 0)
             {
-                sb.Append(PivotEdgesOverlay(pivotEdges, hostCentres));
+                sb.Append(PivotEdgesOverlay(pivotEdges, hostCentres, hostSubBox,
+                                            layout.OuterFrameY + layout.OuterFrameH));
             }
 
             // Empty state
@@ -385,56 +410,180 @@ namespace jVision.Server.Download
             return sb.ToString();
         }
 
-        // Render a labelled arrow between every pivot whose endpoints resolve
-        // to a known host centre. Colour by technique so the report reader can
-        // scan the graph and pick out cred-based moves vs. exploit-based ones
-        // at a glance.
+        // Render every pivot edge as an orthogonal (Manhattan) arrow that exits
+        // its source host from the side, routes horizontally out of the source
+        // subnet, drops into a per-edge lane in the channel below the subnet
+        // row, crosses to the destination side, and rises back into the target
+        // host from its side. Each edge gets its own lane so parallel arrows
+        // never overlap, and by routing outside the subnet frames we never
+        // draw through unrelated host icons ("obsidian-canvas" style).
+        //
+        // Labels sit on the horizontal lane segment as rounded pill boxes
+        // (white fill, coloured border + text) so they read cleanly at any
+        // scale and don't get lost against the grid like the old 11pt halo
+        // labels did.
         private static string PivotEdgesOverlay(List<jVision.Shared.Models.PivotEdge> edges,
-                                                Dictionary<string, (int Cx, int Cy)> hostCentres)
+                                                Dictionary<string, (int Cx, int Cy)> hostCentres,
+                                                Dictionary<string, (int X, int Y, int W, int H)> hostSubBox,
+                                                int subnetRowBottom)
         {
             var sb = new StringBuilder();
+            // Filter to only edges we can actually place, preserving order so
+            // lane assignment matches the order rows appear in the Pivots page.
+            var valid = new List<jVision.Shared.Models.PivotEdge>();
             foreach (var e in edges)
             {
                 if (e == null || string.IsNullOrEmpty(e.SourceIp) || string.IsNullOrEmpty(e.TargetIp)) continue;
                 if (string.Equals(e.SourceIp, e.TargetIp, StringComparison.OrdinalIgnoreCase)) continue;
-                if (!hostCentres.TryGetValue(e.SourceIp, out var src)) continue;
-                if (!hostCentres.TryGetValue(e.TargetIp, out var dst)) continue;
+                if (!hostCentres.ContainsKey(e.SourceIp) || !hostCentres.ContainsKey(e.TargetIp)) continue;
+                valid.Add(e);
+            }
+            if (valid.Count == 0) return "";
 
-                var colour = TechniqueColour(e.Technique);
-                var label = FormatPivotLabel(e);
+            int channelTop = subnetRowBottom + PivotChannelGap;
 
-                // Curved cubic bezier so multiple arrows between the same pair
-                // don't sit on top of each other and stay legible when the
-                // endpoints share a subnet row.
-                int dx = dst.Cx - src.Cx;
-                int dy = dst.Cy - src.Cy;
-                int mx = (src.Cx + dst.Cx) / 2;
-                int my = (src.Cy + dst.Cy) / 2;
-                // Perpendicular offset for the control point; magnitude scales
-                // with distance but is capped so short-hop arrows don't loop.
-                double len = Math.Sqrt(dx * dx + dy * dy);
-                if (len < 1) continue;
-                double nx = -dy / len;
-                double ny = dx / len;
-                int bow = (int)Math.Min(60, Math.Max(18, len * 0.15));
-                int cx = (int)(mx + nx * bow);
-                int cy = (int)(my + ny * bow);
+            for (int i = 0; i < valid.Count; i++)
+            {
+                var e = valid[i];
+                var src = hostCentres[e.SourceIp];
+                var dst = hostCentres[e.TargetIp];
+                var srcSub = hostSubBox[e.SourceIp];
+                var dstSub = hostSubBox[e.TargetIp];
+                int laneY = channelTop + i * PivotLaneSpacing;
+                string colour = TechniqueColour(e.Technique);
+                string marker = PivotMarkerId(colour);
+                string label = FormatPivotLabel(e);
 
-                string path = string.Format(CultureInfo.InvariantCulture,
-                    "M {0} {1} Q {2} {3} {4} {5}",
-                    src.Cx, src.Cy, cx, cy, dst.Cx, dst.Cy);
-                sb.Append($"<path d=\"{path}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"2\" stroke-linecap=\"round\" marker-end=\"url(#{PivotMarkerId(colour)})\" opacity=\"0.9\"/>\n");
+                // Unified routing: exit both hosts from the side that faces
+                // the other endpoint, drop into the shared below-subnet lane
+                // through a "column" that sits in the empty cell gutter next
+                // to the icon (not on top of another host). For cross-subnet
+                // edges we push the column all the way outside the source /
+                // destination subnet frame so the vertical run stays clear of
+                // every host in that subnet. Per-edge offset staggers columns
+                // so parallel arrows don't stack on top of each other.
+                bool sameSubnet = srcSub.Equals(dstSub);
+                int dir = dst.Cx > src.Cx ? 1 : (dst.Cx < src.Cx ? -1 : 1);
+                int stagger = i * 6;
+                int srcExitX = src.Cx + dir * (IconW / 2);
+                int dstEnterX = dst.Cx - dir * (IconW / 2);
+                int srcCol, dstCol;
+                if (sameSubnet)
+                {
+                    // Same subnet: use the cell gutter right next to each icon
+                    // so we don't wrap around the entire subnet frame.
+                    srcCol = src.Cx + dir * (IconW / 2 + 10 + stagger);
+                    dstCol = dst.Cx - dir * (IconW / 2 + 10 + stagger);
+                }
+                else
+                {
+                    // Cross-subnet: keep the drop column outside the subnet
+                    // frame so the vertical segment doesn't clip any host in
+                    // the source / destination subnet.
+                    srcCol = dir > 0 ? srcSub.X + srcSub.W + 20 + stagger : srcSub.X - 20 - stagger;
+                    dstCol = dir > 0 ? dstSub.X - 20 - stagger : dstSub.X + dstSub.W + 20 + stagger;
+                }
+                var waypoints = new List<(int X, int Y)>
+                {
+                    (srcExitX, src.Cy),
+                    (srcCol,   src.Cy),
+                    (srcCol,   laneY),
+                    (dstCol,   laneY),
+                    (dstCol,   dst.Cy),
+                    (dstEnterX, dst.Cy),
+                };
+
+                sb.Append(BuildOrthoPath(waypoints, colour, marker));
 
                 if (!string.IsNullOrEmpty(label))
                 {
-                    // Place label near the control-point midpoint with a small
-                    // white halo (paint-order stroke) so text stays readable
-                    // over other shapes.
-                    int lx = (src.Cx + 2 * cx + dst.Cx) / 4;
-                    int ly = (src.Cy + 2 * cy + dst.Cy) / 4;
-                    sb.Append($"<text x=\"{lx}\" y=\"{ly}\" text-anchor=\"middle\" font-size=\"11\" font-weight=\"700\" fill=\"{colour}\" stroke=\"#ffffff\" stroke-width=\"3\" paint-order=\"stroke\">{XmlEscape(label)}</text>\n");
+                    // Pill sits on the horizontal lane segment, centred on the
+                    // two mid-waypoints so long paths still put the label in
+                    // the middle of the run, not next to a bend.
+                    int lx = (waypoints[waypoints.Count / 2 - 1].X + waypoints[waypoints.Count / 2].X) / 2;
+                    sb.Append(BuildPillLabel(lx, laneY, label, colour));
                 }
             }
+            return sb.ToString();
+        }
+
+        // Emit an orthogonal path through the given waypoints. Consecutive
+        // segments must alternate between purely-horizontal and purely-vertical
+        // (i.e. adjacent waypoints share one coordinate). Each interior corner
+        // is replaced with a quarter-circle arc of radius PivotCornerRadius so
+        // the bends look Obsidian-canvas smooth. Sweep flag per corner is
+        // derived from the 2-D cross product of the incoming vs. outgoing
+        // segment direction — positive cross = clockwise turn (sweep=1) in
+        // SVG's y-down coordinate system.
+        private static string BuildOrthoPath(List<(int X, int Y)> pts, string colour, string marker)
+        {
+            if (pts == null || pts.Count < 2) return "";
+            int r = PivotCornerRadius;
+            var p = new StringBuilder();
+            p.Append(FormattableString.Invariant($"M {pts[0].X} {pts[0].Y}"));
+
+            for (int i = 1; i < pts.Count; i++)
+            {
+                var prev = pts[i - 1];
+                var cur = pts[i];
+                bool last = i == pts.Count - 1;
+
+                if (last)
+                {
+                    // Straight segment to the endpoint (no corner to round).
+                    if (cur.X == prev.X) p.Append(FormattableString.Invariant($" V {cur.Y}"));
+                    else if (cur.Y == prev.Y) p.Append(FormattableString.Invariant($" H {cur.X}"));
+                    else p.Append(FormattableString.Invariant($" L {cur.X} {cur.Y}"));
+                    continue;
+                }
+
+                var next = pts[i + 1];
+                int dx1 = cur.X - prev.X, dy1 = cur.Y - prev.Y;
+                int dx2 = next.X - cur.X, dy2 = next.Y - cur.Y;
+                int len1 = Math.Abs(dx1) + Math.Abs(dy1);        // orthogonal: one is zero
+                int len2 = Math.Abs(dx2) + Math.Abs(dy2);
+                int rr = Math.Min(r, Math.Min(len1, len2) / 2);
+                if (rr <= 0)
+                {
+                    // No room for an arc — draw a straight through this point.
+                    if (cur.X == prev.X) p.Append(FormattableString.Invariant($" V {cur.Y}"));
+                    else                 p.Append(FormattableString.Invariant($" H {cur.X}"));
+                    continue;
+                }
+
+                int sx1 = Math.Sign(dx1), sy1 = Math.Sign(dy1);
+                int sx2 = Math.Sign(dx2), sy2 = Math.Sign(dy2);
+                int preX = cur.X - sx1 * rr, preY = cur.Y - sy1 * rr;
+                int postX = cur.X + sx2 * rr, postY = cur.Y + sy2 * rr;
+                int sweep = (sx1 * sy2 - sy1 * sx2) > 0 ? 1 : 0;
+
+                if (preX == prev.X) p.Append(FormattableString.Invariant($" V {preY}"));
+                else                p.Append(FormattableString.Invariant($" H {preX}"));
+                p.Append(FormattableString.Invariant($" A {rr} {rr} 0 0 {sweep} {postX} {postY}"));
+            }
+
+            return $"<path d=\"{p}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" marker-end=\"url(#{marker})\" opacity=\"0.95\"/>\n";
+        }
+
+        // Rounded pill: white background, coloured border, coloured bold text.
+        // Sits centred on (cx, cy) which is the midpoint of the arrow's
+        // horizontal lane segment.
+        private static string BuildPillLabel(int cx, int cy, string label, string colour)
+        {
+            const int fontSize = 13;
+            const int padX = 10;
+            const int padY = 5;
+            // Approximate text width from character count. Slightly generous so
+            // long labels aren't clipped by the pill outline.
+            int textW = (int)Math.Ceiling(label.Length * fontSize * 0.58);
+            int pillW = textW + 2 * padX;
+            int pillH = fontSize + 2 * padY + 2;
+            int rx = pillH / 2;
+            var sb = new StringBuilder();
+            sb.Append(FormattableString.Invariant(
+                $"<rect x=\"{cx - pillW / 2}\" y=\"{cy - pillH / 2}\" width=\"{pillW}\" height=\"{pillH}\" rx=\"{rx}\" ry=\"{rx}\" fill=\"#ffffff\" stroke=\"{colour}\" stroke-width=\"1.4\"/>\n"));
+            sb.Append(FormattableString.Invariant(
+                $"<text x=\"{cx}\" y=\"{cy + fontSize / 3}\" text-anchor=\"middle\" font-size=\"{fontSize}\" font-weight=\"700\" fill=\"{colour}\">{XmlEscape(label)}</text>\n"));
             return sb.ToString();
         }
 
@@ -475,47 +624,26 @@ namespace jVision.Server.Download
 
         // ==================== device icons ====================
 
-        // Windows monitor: bezel + white screen + 4-colour Windows flag.
+        // Windows: just the four-colour flag, no monitor frame — matches the
+        // Tux mascot style so Windows and Linux hosts share a visual language.
         private static string WinTileMonitor(int x, int y)
         {
             var sb = new StringBuilder();
             sb.Append($"<g transform=\"translate({x},{y})\">");
-            sb.Append("<rect x=\"0\" y=\"0\" width=\"52\" height=\"45\" rx=\"3\" fill=\"#e8f4fb\" stroke=\"#2c7bb6\" stroke-width=\"1.4\"/>");
-            sb.Append("<rect x=\"3\" y=\"3\" width=\"46\" height=\"34\" fill=\"#ffffff\"/>");
-            // 4-colour Windows flag in screen
-            sb.Append("<path d=\"M 6 7 L 23 5 L 23 19 L 6 21 Z\" fill=\"#f25022\"/>");
-            sb.Append("<path d=\"M 25 5 L 46 3 L 46 19 L 25 19 Z\" fill=\"#7fba00\"/>");
-            sb.Append("<path d=\"M 6 23 L 23 21 L 23 35 L 6 37 Z\" fill=\"#00a4ef\"/>");
-            sb.Append("<path d=\"M 25 21 L 46 19 L 46 35 L 25 35 Z\" fill=\"#ffb900\"/>");
-            // Stand
-            sb.Append("<rect x=\"22\" y=\"45\" width=\"8\" height=\"5\" fill=\"#2c7bb6\"/>");
-            sb.Append("<rect x=\"14\" y=\"50\" width=\"24\" height=\"3\" rx=\"1\" fill=\"#2c7bb6\"/>");
+            sb.Append("<path d=\"M 6 8 L 25 5 L 25 22 L 6 24 Z\" fill=\"#f25022\"/>");
+            sb.Append("<path d=\"M 27 5 L 47 3 L 47 22 L 27 22 Z\" fill=\"#7fba00\"/>");
+            sb.Append("<path d=\"M 6 26 L 25 24 L 25 41 L 6 43 Z\" fill=\"#00a4ef\"/>");
+            sb.Append("<path d=\"M 27 24 L 47 22 L 47 41 L 27 41 Z\" fill=\"#ffb900\"/>");
             sb.Append("</g>");
             return sb.ToString();
         }
 
-        // Linux monitor: bezel + white screen + simplified Tux penguin.
+        // Base64-embedded Tux PNG in the 52x45 icon footprint, letterboxed so
+        // the aspect ratio isn't squashed.
         private static string LinuxMonitor(int x, int y)
         {
-            var sb = new StringBuilder();
-            sb.Append($"<g transform=\"translate({x},{y})\">");
-            // Bezel + screen
-            sb.Append("<rect x=\"0\" y=\"0\" width=\"52\" height=\"45\" rx=\"3\" fill=\"#e8f4fb\" stroke=\"#2c7bb6\" stroke-width=\"1.4\"/>");
-            sb.Append("<rect x=\"3\" y=\"3\" width=\"46\" height=\"34\" fill=\"#ffffff\"/>");
-            // Tux penguin centred in screen (screen centre: 26, 20)
-            sb.Append("<ellipse cx=\"26\" cy=\"26\" rx=\"9\" ry=\"12\" fill=\"#111\"/>"); // body
-            sb.Append("<ellipse cx=\"26\" cy=\"28\" rx=\"5\" ry=\"8\" fill=\"#f5f5f5\"/>"); // belly
-            sb.Append("<ellipse cx=\"26\" cy=\"11\" rx=\"7\" ry=\"6\" fill=\"#111\"/>"); // head
-            sb.Append("<circle cx=\"22\" cy=\"10\" r=\"2\" fill=\"white\"/>"); // L eye white
-            sb.Append("<circle cx=\"30\" cy=\"10\" r=\"2\" fill=\"white\"/>"); // R eye white
-            sb.Append("<circle cx=\"22\" cy=\"10\" r=\"1\" fill=\"#222\"/>"); // L pupil
-            sb.Append("<circle cx=\"30\" cy=\"10\" r=\"1\" fill=\"#222\"/>"); // R pupil
-            sb.Append("<path d=\"M 23 15 L 29 15 L 26 19 Z\" fill=\"#e8a000\"/>"); // beak
-            // Stand
-            sb.Append("<rect x=\"22\" y=\"45\" width=\"8\" height=\"5\" fill=\"#2c7bb6\"/>");
-            sb.Append("<rect x=\"14\" y=\"50\" width=\"24\" height=\"3\" rx=\"1\" fill=\"#2c7bb6\"/>");
-            sb.Append("</g>");
-            return sb.ToString();
+            return FormattableString.Invariant(
+                $"<image x=\"{x}\" y=\"{y}\" width=\"52\" height=\"45\" preserveAspectRatio=\"xMidYMid meet\" href=\"{TuxAsset.DataUrl}\"/>");
         }
 
         // ==================== helpers ====================

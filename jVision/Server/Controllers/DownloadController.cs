@@ -44,19 +44,28 @@ namespace jVision.Server.Controllers
         }
 
         // SVG rendered directly on the server -- opens in any browser and is
-        // editable in Inkscape. Meant for at-a-glance "who's where" reports.
-        // ?pivots=false strips the attack-path arrow overlay so you can get a
-        // clean network diagram (e.g. for the "environment" section of a report)
-        // and the same URL with pivots=true (or omitted) for the "attack story"
-        // section.
+        // editable in Inkscape. Always plain (no pivot arrows) so it stays
+        // usable for the "environment" section of a report. The attack story
+        // lives in /download/attack-path.svg instead, which draws the pivots
+        // as a proper numbered kill-chain tree.
         [HttpGet("topology.svg")]
-        public IActionResult DownloadTopologySvg([FromQuery] bool pivots = true)
+        public IActionResult DownloadTopologySvg()
         {
             var boxes = _context.Boxes.Include(i => i.Services).ToList();
-            var edges = pivots ? _context.PivotEdge.ToList() : null;
-            var bytes = TopologyRenderer.RenderSvg(boxes, edges);
-            var name = pivots ? "topology.svg" : "topology-plain.svg";
-            return File(bytes, "image/svg+xml", name);
+            var bytes = TopologyRenderer.RenderSvg(boxes, null);
+            return File(bytes, "image/svg+xml", "topology.svg");
+        }
+
+        // Attack-narrative map: numbered kill-chain tree with the attacker at
+        // the top and each PivotEdge as one step. Meant to be dropped straight
+        // into the "attack narrative" section of a report.
+        [HttpGet("attack-path.svg")]
+        public IActionResult DownloadAttackPathSvg()
+        {
+            var boxes = _context.Boxes.Include(i => i.Services).ToList();
+            var edges = _context.PivotEdge.OrderBy(e => e.CreatedAt).ToList();
+            var bytes = AttackPathRenderer.RenderSvg(boxes, edges);
+            return File(bytes, "image/svg+xml", "attack-path.svg");
         }
 
         // Standalone draw.io file (mxGraphModel already laid out) -- unlike the

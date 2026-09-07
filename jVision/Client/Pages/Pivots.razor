@@ -11,24 +11,24 @@
     <h3 style="margin:0; flex:1;">Attack Path</h3>
     <button class="btn btn-primary" @onclick="Load">Refresh</button>
 
-    <div class="btn-group" role="group" aria-label="Topology with arrows">
-        <a href="download/topology.svg" class="btn btn-info" role="button" target="_top"
-           title="topology.svg with all pivot arrows overlaid">
-            <span class="oi oi-data-transfer-download"></span> With arrows (SVG)
+    <div class="btn-group" role="group" aria-label="Attack-narrative map">
+        <a href="download/attack-path.svg" class="btn btn-danger" role="button" target="_top"
+           title="numbered kill-chain map, ready to drop into the report attack narrative">
+            <span class="oi oi-data-transfer-download"></span> Attack path (SVG)
         </a>
-        <button class="btn btn-info" @onclick="() => DownloadTopologyPng(true)"
-                title="topology with arrows, rasterised to PNG in the browser">
+        <button class="btn btn-danger" @onclick="DownloadAttackPathPng"
+                title="attack narrative rasterised to PNG in the browser">
             <span class="oi oi-image"></span> PNG
         </button>
     </div>
 
     <div class="btn-group" role="group" aria-label="Plain topology">
-        <a href="download/topology.svg?pivots=false" class="btn btn-secondary" role="button" target="_top"
-           title="topology.svg without any pivot arrows">
-            <span class="oi oi-data-transfer-download"></span> Plain (SVG)
+        <a href="download/topology.svg" class="btn btn-secondary" role="button" target="_top"
+           title="network topology (no pivot overlay)">
+            <span class="oi oi-data-transfer-download"></span> Topology (SVG)
         </a>
-        <button class="btn btn-secondary" @onclick="() => DownloadTopologyPng(false)"
-                title="plain topology rasterised to PNG in the browser">
+        <button class="btn btn-secondary" @onclick="DownloadTopologyPng"
+                title="topology rasterised to PNG in the browser">
             <span class="oi oi-image"></span> PNG
         </button>
     </div>
@@ -197,12 +197,17 @@ else
         catch (Exception ex) { _error = ex.Message; }
     }
 
-    private async Task DownloadTopologyPng(bool pivots)
+    private async Task DownloadTopologyPng()
     {
         var stamp = DateTime.UtcNow.ToString("yyyy-MM-dd-HHmm");
-        var name = pivots ? $"topology-{stamp}.png" : $"topology-plain-{stamp}.png";
-        var url = pivots ? "download/topology.svg" : "download/topology.svg?pivots=false";
-        try { await JS.InvokeAsync<bool>("topologyPng.download", url, name, 2); }
+        try { await JS.InvokeAsync<bool>("topologyPng.download", "download/topology.svg", $"topology-{stamp}.png", 2); }
+        catch (Exception ex) { Console.WriteLine("PNG export failed: " + ex); }
+    }
+
+    private async Task DownloadAttackPathPng()
+    {
+        var stamp = DateTime.UtcNow.ToString("yyyy-MM-dd-HHmm");
+        try { await JS.InvokeAsync<bool>("topologyPng.download", "download/attack-path.svg", $"attack-path-{stamp}.png", 2); }
         catch (Exception ex) { Console.WriteLine("PNG export failed: " + ex); }
     }
 

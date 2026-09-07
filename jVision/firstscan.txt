@@ -1,67 +1,16 @@
-Starting Nmap 7.94SVN ( https://nmap.org ) at 2026-08-05 21:30 +03
-Warning: 192.168.100.16 giving up on port because retransmission cap hit (6).
-Nmap scan report for 192.168.100.1
-Host is up (0.0022s latency).
-Not shown: 994 closed tcp ports (conn-refused)
-PORT     STATE    SERVICE
-21/tcp   filtered ftp
-22/tcp   filtered ssh
-23/tcp   filtered telnet
-53/tcp   open     domain
-80/tcp   open     http
-8022/tcp filtered oa-system
-
-Nmap scan report for 192.168.100.13
-Host is up (0.0045s latency).
-Not shown: 997 closed tcp ports (conn-refused)
+Starting Nmap 7.94SVN ( https://nmap.org ) at 2026-09-02 11:34 +03
+Nmap scan report for 10.10.10.5
+Host is up (0.030s latency).
+Not shown: 991 closed tcp ports (conn-refused)
 PORT     STATE SERVICE
-21/tcp   open  ftp
-3389/tcp open  ms-wbt-server
-7070/tcp open  realserver
+53/tcp   open  domain
+88/tcp   open  kerberos-sec
+135/tcp  open  msrpc
+139/tcp  open  netbios-ssn
+389/tcp  open  ldap
+445/tcp  open  microsoft-ds
+464/tcp  open  kpasswd5
+3268/tcp open  globalcatLDAP
+3269/tcp open  globalcatLDAPssl
 
-Nmap scan report for 192.168.100.14
-Host is up (0.0086s latency).
-Not shown: 997 closed tcp ports (conn-refused)
-PORT     STATE SERVICE
-8001/tcp open  vcom-tunnel
-8002/tcp open  teradataordbms
-8080/tcp open  http-proxy
-
-Nmap scan report for 192.168.100.16
-Host is up (0.0066s latency).
-All 1000 scanned ports on 192.168.100.16 are in ignored states.
-Not shown: 539 closed tcp ports (conn-refused), 461 filtered tcp ports (no-response)
-
-Nmap scan report for 192.168.100.22
-Host is up (0.000049s latency).
-Not shown: 997 closed tcp ports (conn-refused)
-PORT     STATE SERVICE
-80/tcp   open  http
-7070/tcp open  realserver
-7777/tcp open  cbt
-
-Nmap scan report for 192.168.100.51
-Host is up (0.0055s latency).
-All 1000 scanned ports on 192.168.100.51 are in ignored states.
-Not shown: 1000 closed tcp ports (conn-refused)
-
-Nmap scan report for 192.168.100.103
-Host is up (0.012s latency).
-Not shown: 998 closed tcp ports (conn-refused)
-PORT      STATE SERVICE
-49152/tcp open  unknown
-62078/tcp open  iphone-sync
-
-Nmap scan report for 192.168.100.174
-Host is up (0.011s latency).
-Not shown: 998 closed tcp ports (conn-refused)
-PORT      STATE SERVICE
-49152/tcp open  unknown
-62078/tcp open  iphone-sync
-
-Nmap scan report for 192.168.100.176
-Host is up (0.0053s latency).
-All 1000 scanned ports on 192.168.100.176 are in ignored states.
-Not shown: 1000 closed tcp ports (conn-refused)
-
-Nmap done: 9 IP addresses (9 hosts up) scanned in 11.90 seconds
+Nmap done: 1 IP address (1 host up) scanned in 2.76 seconds
