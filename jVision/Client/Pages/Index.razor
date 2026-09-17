@@ -342,9 +342,6 @@ else
 
                 <div class="p-2 mr-auto"><h5>@box.Hostname | @box.Ip</h5></div>
 
-                <div class="p-2" @onclick:stopPropagation="true" @onclick:preventDefault="true">
-                    @StageChip(box)
-                </div>
                 <div class="p-1">
                     <button @onclick:stopPropagation="true" @onclick:preventDefault="true" class="btn btn-success p-2 align-middle" @onclick="(() => OpenDialog(box, users))">Edit</button>
                 </div>
@@ -368,9 +365,6 @@ else
 
                 <div class="p-2 mr-auto"><h5>@box.Hostname | @box.Ip</h5></div>
 
-                <div class="p-2" @onclick:stopPropagation="true" @onclick:preventDefault="true">
-                    @StageChip(box)
-                </div>
                 @PresenceChip(box.BoxId)
                 <div class="p-1">
                     <button @onclick:stopPropagation="true" @onclick:preventDefault="true" class="btn btn-success p-2 align-middle" @onclick="(() => OpenDialog(box, users))">Edit</button>
@@ -466,48 +460,6 @@ else
     private string _yourName;
 
     [CascadingParameter] Task<AuthenticationState> AuthenticationState { get; set; }
-
-    // (Progress board) mirror of Board.razor.Stages so the chip dropdown here
-    // stays consistent.
-    private static readonly (string Key, string Label, string Bg, string Fg)[] _stages =
-    {
-        ("todo",     "To-scan",     "#e5eaf0", "#39485a"),
-        ("enum",     "Enumerating", "#d6e5ff", "#1e3a6b"),
-        ("foothold", "Foothold",    "#ffe9b3", "#6b4b0f"),
-        ("privesc",  "Priv-esc",    "#ffcbcb", "#7f2020"),
-        ("owned",    "Owned",       "#c9ecc9", "#1a4d1a"),
-    };
-
-    private static string NormStage(string s) => string.IsNullOrWhiteSpace(s) ? "todo" : s.Trim().ToLowerInvariant();
-
-    private RenderFragment StageChip(BoxDTO box) => builder =>
-    {
-        var cur = _stages.FirstOrDefault(s => s.Key == NormStage(box.Stage));
-        if (cur == default) cur = _stages[0];
-        builder.OpenElement(0, "select");
-        builder.AddAttribute(1, "class", "form-select form-select-sm");
-        builder.AddAttribute(2, "style", $"width:auto; display:inline-block; background:{cur.Bg}; color:{cur.Fg}; border-color:{cur.Fg}; font-weight:600;");
-        builder.AddAttribute(3, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e => ChangeStage(box, e.Value?.ToString())));
-        int i = 10;
-        foreach (var s in _stages)
-        {
-            builder.OpenElement(i++, "option");
-            builder.AddAttribute(i++, "value", s.Key);
-            if (s.Key == cur.Key) builder.AddAttribute(i++, "selected", true);
-            builder.AddContent(i++, s.Label);
-            builder.CloseElement();
-        }
-        builder.CloseElement();
-    };
-
-    private async Task ChangeStage(BoxDTO box, string newStage)
-    {
-        var resp = await Http.PostAsJsonAsync($"box/{box.BoxId}/stage", new { Stage = newStage });
-        if (resp.IsSuccessStatusCode)
-        {
-            box.Stage = newStage;
-        }
-    }
 
     // (Presence) map of boxId -> list of user names currently viewing.
     private Dictionary<int, List<string>> _presence = new();

@@ -25,6 +25,13 @@ namespace jVision.Shared.Models
 
         public string Subnet { get; set; }
 
+        // AD/DNS domain the host belongs to (e.g. "corp.local"). Nullable.
+        public string Domain { get; set; }
+
+        // CPTC environment bucket (web / AD / OT / AI / mobile / cloud).
+        // Groups hosts on the network topology diagram. Nullable.
+        public string Category { get; set; }
+
         // Progress stage (todo/enum/foothold/privesc/owned). Null = untriaged.
         public string Stage { get; set; }
 

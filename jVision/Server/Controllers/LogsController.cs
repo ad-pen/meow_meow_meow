@@ -87,10 +87,10 @@ namespace jVision.Server.Controllers
         // A=bash (zsh), B=burp. Chronological, independent lists (bash and burp
         // rows don't line up by timestamp -- they're independent streams).
         //
-        // Operator names are anonymized to member1, member2, ... so the export
-        // can be shared without leaking who did what. Mapping order is
-        // alphabetical by real operator name so re-running the export produces
-        // stable pseudonyms across the same dataset.
+        // Operator names are replaced with the source IP jVision last saw them
+        // connect from (looked up in TeamIp). Falls back to "unknown-N" if we
+        // never recorded an IP for that operator, so the export still shares
+        // cleanly without leaking usernames.
         [HttpGet("export")]
         public async Task<IActionResult> Export()
         {
@@ -112,9 +112,31 @@ namespace jVision.Server.Controllers
                     .Distinct()
                     .OrderBy(o => o, StringComparer.OrdinalIgnoreCase)
                     .ToList();
+
+                // Most-recent IP per operator (case-insensitive on username to
+                // match how LogEntry.Operator is stored across clients).
+                var latestIpByOp = await _context.TeamIp
+                    .GroupBy(t => t.Operator)
+                    .Select(g => new
+                    {
+                        Op = g.Key,
+                        Ip = g.OrderByDescending(t => t.LastSeen).First().Ip,
+                    })
+                    .ToListAsync();
+                var ipMap = latestIpByOp.ToDictionary(
+                    x => x.Op ?? "",
+                    x => x.Ip,
+                    StringComparer.OrdinalIgnoreCase);
+
                 var opToAlias = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                for (int i = 0; i < distinctOps.Count; i++)
-                    opToAlias[distinctOps[i]] = $"member{i + 1}";
+                int unknownIdx = 0;
+                foreach (var op in distinctOps)
+                {
+                    if (ipMap.TryGetValue(op, out var ip) && !string.IsNullOrWhiteSpace(ip))
+                        opToAlias[op] = ip;
+                    else
+                        opToAlias[op] = $"unknown-{++unknownIdx}";
+                }
 
                 foreach (var opGroup in all.GroupBy(l => l.Operator ?? "unknown"))
                 {

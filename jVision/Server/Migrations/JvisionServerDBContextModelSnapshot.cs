@@ -214,7 +214,13 @@ namespace jVision.Server.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("Category")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Comments")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Domain")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Hostname")

@@ -1,1 +1,6 @@
 token.txt
+
+# jVision db backups (may contain secrets)
+jVision/data/*.bak
+jVision/data/*.bak-*
+jVision/data/*.pre-reset*

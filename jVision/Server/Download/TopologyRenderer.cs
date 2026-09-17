@@ -9,25 +9,30 @@ using jVision.Server.Models;
 
 namespace jVision.Server.Download
 {
-    // Network topology renderer — row-wise layout (3 subnets per row):
+    // Network topology renderer — CPTC-style category grouping:
     //
     //   +--------------------------+
     //   |     Attacker Network     |   dashed box, hooded-figure monitor
     //   +--------------------------+
     //              |  ↓
-    //          [ ROUTER ]             clean cyan cylinder, no coloured arrow shapes
+    //          [ ROUTER ]             clean cyan cylinder
     //              |  ↓
-    //   [subnet A] [subnet B] [subnet C]   dashed sub-boxes, 3 per row
-    //   [subnet D] [subnet E] [subnet F]
+    //   +-------- CPTC Network -----------------+
+    //   | [Active Directory]  [Web Environment] |
+    //   | [OT Systems]        [AI Systems]      |
+    //   | [Mobile]            [Cloud]           |
+    //   +---------------------------------------+
     //
-    //  Each device shows an OS-specific monitor icon (Linux Tux or Windows flag)
-    //  and the IP address only — no hostname notes, no "Production Network" frame,
-    //  no subnet labels next to the router.
+    //  Each host shows an OS-specific icon (Linux Tux / Windows flag / cloud
+    //  silhouette) and the IP + short domain label. Hosts are grouped by
+    //  Box.Category (web / AD / OT / AI / mobile / cloud). Uncategorized
+    //  hosts land in an "Other" bucket.
     //
     // Mapping from jVision data:
-    //   Box.Subnet -> sub-environment label (normalized to /24 if bare IP/empty)
-    //   Box.Ip     -> bold label under each device
-    //   Box.Os/Box.Hostname -> icon selector (either field can indicate windows/linux)
+    //   Box.Category -> sub-environment label (grouped)
+    //   Box.Ip       -> bold label under each device
+    //   Box.Domain   -> short chip under the IP
+    //   Box.Os/Box.Hostname -> icon selector
     public static class TopologyRenderer
     {
         // ---- Layout constants ----
@@ -40,23 +45,27 @@ namespace jVision.Server.Download
         private const int RouterW = 100, RouterH = 58;
         private const int RouterTopY = 280;
 
-        // OuterFrameTopY is reused only as the Y where subnet rows begin
-        // (no actual outer frame is drawn any more).
+        // Outer "engagement network" frame — reintroduced to match the CPTC
+        // reference diagram where every category box lives inside a labelled
+        // dashed container ("All Ports Tours Network").
         private const int OuterFrameTopY = 400;
-        private const int OuterFramePad = 0;
+        private const int OuterFramePad = 22;
+        private const string OuterFrameLabel = "CPTC Network";
 
-        // Sub-environment box
-        private const int SubBoxMinW = 380;
+        // Category / sub-environment box — width sized so a 3-column grid
+        // of cells still leaves each cell wide enough to fit a full FQDN
+        // like "navigation.allports.tours" without clipping.
+        private const int SubBoxMinW = 580;
         private const int SubBoxHeaderH = 28;
         private const int SubBoxPadX = 22, SubBoxPadY = 14;
 
-        // Device cell (icon + IP label only)
+        // Device cell (icon + IP label + optional domain chip)
         private const int IconW = 52, IconH = 45;
         private const int CellW = 120, CellH = 95;
         private const int DevPerRow = 3;
 
-        private const int SubGapX = 25, SubGapY = 20;
-        private const int SubCols = 3;                     // 3 subnet columns (row-wise layout)
+        private const int SubGapX = 30, SubGapY = 24;
+        private const int SubCols = 2;                     // 2 category columns (matches reference)
 
         // Vertical spacing between pivot-arrow lanes in the channel below the
         // subnet row. Must clear the pill-label height (~24px) with headroom.
@@ -69,58 +78,58 @@ namespace jVision.Server.Download
         private static Version TryParseIp(string ip) =>
             Version.TryParse(ip ?? "", out var v) ? v : new Version(0, 0, 0, 0);
 
-        private static List<(string Subnet, List<Box> Hosts)> GroupBySubnet(List<Box> boxes)
+        // Fixed display order + long-form labels for the CPTC category buckets.
+        // Anything that doesn't match a known category (case-insensitive) is
+        // treated as "Other" and rendered last, so operator-set free-text
+        // values still surface instead of being dropped.
+        private static readonly (string Key, string Label)[] _categoryOrder =
+        {
+            ("AD",     "Active Directory Environment"),
+            ("Web",    "Web Environment"),
+            ("OT",     "OT Systems"),
+            ("AI",     "AI Systems"),
+            ("Mobile", "Mobile Environment"),
+            ("Cloud",  "Cloud Environment"),
+        };
+
+        private static string NormalizeCategoryKey(string raw)
+        {
+            var t = (raw ?? "").Trim();
+            if (t.Length == 0) return "Other";
+            // Fold common aliases into canonical keys so a "web", "WEB",
+            // "web-app", "active directory" all end up in the same bucket.
+            var low = t.ToLowerInvariant();
+            if (low.Contains("active directory") || low == "ad") return "AD";
+            if (low.Contains("web"))                             return "Web";
+            if (low.Contains("ot"))                              return "OT";
+            if (low.Contains("ai"))                              return "AI";
+            if (low.Contains("mobile"))                          return "Mobile";
+            if (low.Contains("cloud"))                           return "Cloud";
+            return t;   // unknown — display as-is
+        }
+
+        private static string CategoryLabel(string key)
+        {
+            foreach (var (k, label) in _categoryOrder)
+                if (string.Equals(k, key, StringComparison.OrdinalIgnoreCase)) return label;
+            return key;
+        }
+
+        private static int CategoryOrderIndex(string key)
+        {
+            for (int i = 0; i < _categoryOrder.Length; i++)
+                if (string.Equals(_categoryOrder[i].Key, key, StringComparison.OrdinalIgnoreCase)) return i;
+            return int.MaxValue;   // unknown categories sort after all known ones
+        }
+
+        private static List<(string Category, List<Box> Hosts)> GroupByCategory(List<Box> boxes)
         {
             return boxes
-                .GroupBy(b => NormalizeSubnet(b))
-                .OrderByDescending(g => g.Count())          // biggest first (best fit for 2-col grid)
-                .ThenBy(g => g.Key, StringComparer.Ordinal)
-                .Select(g => (g.Key, g.OrderBy(b => TryParseIp(b.Ip)).ToList()))
+                .GroupBy(b => NormalizeCategoryKey(b.Category))
+                .OrderBy(g => CategoryOrderIndex(g.Key))
+                .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(g => (CategoryLabel(g.Key), g.OrderBy(b => TryParseIp(b.Ip)).ToList()))
                 .ToList();
-        }
-
-        // The scan client writes whatever came from `-s ...` into Box.Subnet -- a
-        // hostname, an IP, or a CIDR. Normalize everything to a /24 network
-        // string so hosts belonging to the same /24 actually group together.
-        private static string NormalizeSubnet(Box b)
-        {
-            var raw = (b.Subnet ?? "").Trim();
-
-            // Explicit CIDR: canonicalize to the network address of that mask so
-            // "10.10.10.5/24" and "10.10.10.99/24" collapse to "10.10.10.0/24".
-            if (raw.Contains('/'))
-            {
-                var canon = CanonicalCidr(raw);
-                if (canon != null) return canon;
-            }
-
-            // Bare IP or empty -- derive a /24 from the host's IP.
-            if (!string.IsNullOrEmpty(b.Ip))
-            {
-                var parts = b.Ip.Split('.');
-                if (parts.Length == 4 && parts.All(p => byte.TryParse(p, out _)))
-                    return $"{parts[0]}.{parts[1]}.{parts[2]}.0/24";
-            }
-
-            return string.IsNullOrEmpty(raw) ? "(no subnet)" : raw;
-        }
-
-        private static string CanonicalCidr(string cidr)
-        {
-            var slash = cidr.IndexOf('/');
-            if (slash <= 0) return null;
-            var ip = cidr.Substring(0, slash);
-            if (!int.TryParse(cidr.Substring(slash + 1), out var bits) || bits < 0 || bits > 32)
-                return null;
-            var parts = ip.Split('.');
-            if (parts.Length != 4) return null;
-            var octets = new byte[4];
-            for (int i = 0; i < 4; i++)
-                if (!byte.TryParse(parts[i], out octets[i])) return null;
-            uint addr = ((uint)octets[0] << 24) | ((uint)octets[1] << 16) | ((uint)octets[2] << 8) | octets[3];
-            uint mask = bits == 0 ? 0u : 0xFFFFFFFFu << (32 - bits);
-            uint net = addr & mask;
-            return $"{(byte)(net >> 24)}.{(byte)(net >> 16)}.{(byte)(net >> 8)}.{(byte)net}/{bits}";
         }
 
         // OS detection: check the Os field, then fall back to hostname keywords
@@ -149,6 +158,25 @@ namespace jVision.Server.Download
             return false;
         }
 
+        // Hosted-cloud endpoints (S3 buckets, AWS/Azure/GCP surface, anything
+        // tagged as "cloud.*" in the domain) get the cloud icon so the eye
+        // picks them out from the on-prem Linux/Windows hosts.
+        private static readonly string[] _cloudKeywords = { "cloud", "aws", "azure", "gcp", "s3" };
+
+        private static bool IsCloud(Box b)
+        {
+            var hn = (b.Hostname ?? "").ToLowerInvariant();
+            var dm = (b.Domain ?? "").ToLowerInvariant();
+            return _cloudKeywords.Any(k => hn.Contains(k) || dm.Contains(k));
+        }
+
+        // Mobile hosts get a phone silhouette regardless of underlying OS so
+        // the diagram reads at a glance ("this row is the mobile fleet").
+        // Category is authoritative here — no keyword fallback, since a
+        // "mobile-api" hostname might live in the Web bucket for a shop app.
+        private static bool IsMobile(Box b) =>
+            string.Equals(NormalizeCategoryKey(b.Category), "Mobile", StringComparison.OrdinalIgnoreCase);
+
         // ==================== layout math ====================
 
         private static int RowsInSub(int hostCount) =>
@@ -170,28 +198,29 @@ namespace jVision.Server.Download
             public List<(int X, int Y, int W, int H)> SubBoxes = new();  // absolute rects
         }
 
-        private static Layout Compute(List<(string Subnet, List<Box> Hosts)> grouped)
+        private static Layout Compute(List<(string Category, List<Box> Hosts)> grouped)
         {
             var l = new Layout();
 
-            // Determine outer frame width: uniform sub-box width * effective column
-            // count + gaps + padding. Effective columns adapt to the actual host
-            // count so a lone subnet (or 2) end up centered under the router
-            // instead of parked in the leftmost slot of a 3-wide grid.
-            int subBoxW = SubBoxMinW;                                   // uniform
+            // Outer frame width: uniform sub-box width * effective column
+            // count + gaps + padding. Effective columns adapt to the actual
+            // group count so a lone category ends up centered under the
+            // router instead of parked in the leftmost slot of a 2-wide grid.
+            int subBoxW = SubBoxMinW;
             int effectiveCols = Math.Max(1, Math.Min(SubCols, Math.Max(1, grouped.Count)));
             int innerW = subBoxW * effectiveCols + SubGapX * (effectiveCols - 1);
             l.OuterFrameW = innerW + 2 * OuterFramePad;
             l.CanvasW = Math.Max(CanvasMinW, l.OuterFrameW + 2 * OuterPadX);
 
-            // Positions of the fixed elements
+            // Fixed elements
             l.OuterFrameX = (l.CanvasW - l.OuterFrameW) / 2;
             l.OuterFrameY = OuterFrameTopY;
             l.AttackerX = (l.CanvasW - AttackerW) / 2;
             l.RouterX   = (l.CanvasW - RouterW) / 2;
 
-            // Grid-place the sub-boxes (row-major). Each row is centered
-            // independently so a trailing partial row also sits under the router.
+            // Grid-place the sub-boxes inside the outer frame. Each row is
+            // centered independently so a trailing partial row still sits
+            // under the router.
             int contentY = l.OuterFrameY + OuterFramePad;
             int yCursor = contentY;
 
@@ -211,12 +240,11 @@ namespace jVision.Server.Download
                 }
                 yCursor += rowH + SubGapY;
             }
-            // Undo the trailing gap added after the last row for height math.
             if (grouped.Count > 0) yCursor -= SubGapY;
             int totalContentH = Math.Max(0, yCursor - contentY);
 
             l.OuterFrameH = Math.Max(200, totalContentH + 2 * OuterFramePad);
-            l.CanvasH = l.OuterFrameY + l.OuterFrameH + 20;             // trailing whitespace
+            l.CanvasH = l.OuterFrameY + l.OuterFrameH + 20;
             return l;
         }
 
@@ -226,7 +254,7 @@ namespace jVision.Server.Download
 
         public static byte[] RenderSvg(List<Box> boxes, List<jVision.Shared.Models.PivotEdge> pivotEdges)
         {
-            var grouped = GroupBySubnet(boxes);
+            var grouped = GroupByCategory(boxes);
             var layout = Compute(grouped);
 
             // Pivot arrows route through a horizontal channel below the subnet
@@ -255,21 +283,26 @@ namespace jVision.Server.Download
             // Router — clean cylinder, no coloured diagonal shapes, no subnet label
             sb.Append(CiscoRouter(layout.RouterX, RouterTopY));
 
-            // Arrow router -> subnets (arrowhead at subnet end, centred)
+            // Arrow router -> engagement frame
             sb.Append(DownArrow(layout.CanvasW / 2, RouterTopY + RouterH + 20, layout.OuterFrameY - 8));
 
-            // No outer "Production Network" frame or label — subnets appear directly in rows.
+            // Outer "CPTC Network" frame that wraps every category box —
+            // mirrors the reference diagram's engagement-scope container.
+            sb.Append(EngagementFrame(layout.OuterFrameX, layout.OuterFrameY,
+                                      layout.OuterFrameW, layout.OuterFrameH,
+                                      OuterFrameLabel));
 
-            // Sub-environments. Record each host's on-canvas centre plus the
-            // sub-box its icon lives in so the pivot-edge overlay can route
-            // arrows around subnet frames instead of straight through them.
+            // Category sub-environments. Record each host's on-canvas centre
+            // plus the sub-box its icon lives in so the pivot-edge overlay
+            // can route arrows around category frames instead of straight
+            // through them.
             var hostCentres = new Dictionary<string, (int Cx, int Cy)>(StringComparer.OrdinalIgnoreCase);
             var hostSubBox  = new Dictionary<string, (int X, int Y, int W, int H)>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < grouped.Count; i++)
             {
-                var (subnet, hosts) = grouped[i];
+                var (category, hosts) = grouped[i];
                 var (x, y, w, h) = layout.SubBoxes[i];
-                sb.Append(SubEnvBox(x, y, w, h, subnet, hosts, hostCentres));
+                sb.Append(SubEnvBox(x, y, w, h, category, hosts, hostCentres));
                 foreach (var host in hosts)
                 {
                     if (!string.IsNullOrEmpty(host.Ip))
@@ -288,7 +321,7 @@ namespace jVision.Server.Download
             // Empty state
             if (grouped.Count == 0)
             {
-                sb.Append($"<text x=\"{layout.CanvasW / 2}\" y=\"{layout.OuterFrameY + 80}\" text-anchor=\"middle\" font-size=\"14\" fill=\"#94a3b8\">No hosts discovered yet.</text>\n");
+                sb.Append($"<text x=\"{layout.CanvasW / 2}\" y=\"{layout.OuterFrameY + 80}\" text-anchor=\"middle\" font-size=\"14\" fill=\"#94a3b8\">No hosts categorized yet.</text>\n");
             }
 
             sb.Append("</svg>\n");
@@ -357,6 +390,30 @@ namespace jVision.Server.Download
             sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + h - 24}\" text-anchor=\"middle\" font-size=\"12\" fill=\"#111\">VDI</text>");
             sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + h - 10}\" text-anchor=\"middle\" font-size=\"12\" fill=\"#111\">Infrastructure</text>");
             sb.Append($"</g>\n");
+            return sb.ToString();
+        }
+
+        // Outer dashed engagement frame that wraps every category box, with a
+        // small solid-outline label chip sitting on the top-left of the frame
+        // (matches the "All Ports Tours Network" chip in the reference).
+        private static string EngagementFrame(int x, int y, int w, int h, string label)
+        {
+            var sb = new StringBuilder();
+            sb.Append($"<g>");
+            sb.Append($"<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"none\" stroke=\"#333\" stroke-width=\"1.4\" stroke-dasharray=\"6,4\"/>");
+            // Label chip nested into the top-left corner, breaking the dashed
+            // outline so the frame reads as a named container rather than an
+            // anonymous box.
+            const int chipPadX = 10, chipPadY = 5;
+            const int fs = 13;
+            int textW = (int)Math.Ceiling((label ?? "").Length * fs * 0.6);
+            int chipW = textW + 2 * chipPadX;
+            int chipH = fs + 2 * chipPadY;
+            int chipX = x + 14;
+            int chipY = y - chipH / 2;
+            sb.Append($"<rect x=\"{chipX}\" y=\"{chipY}\" width=\"{chipW}\" height=\"{chipH}\" fill=\"#ffffff\" stroke=\"#333\" stroke-width=\"1\"/>");
+            sb.Append($"<text x=\"{chipX + chipW / 2}\" y=\"{chipY + chipH / 2 + fs / 3}\" text-anchor=\"middle\" font-size=\"{fs}\" font-weight=\"700\" fill=\"#111\">{XmlEscape(label ?? "")}</text>");
+            sb.Append("</g>\n");
             return sb.ToString();
         }
 
@@ -613,11 +670,27 @@ namespace jVision.Server.Download
             int ix = cx - IconW / 2;
             var sb = new StringBuilder();
             sb.Append($"<g>");
-            sb.Append(IsWindows(b)
-                ? WinTileMonitor(ix, top)
-                : LinuxMonitor(ix, top));
+            if (IsCloud(b))
+                sb.Append(CloudMonitor(ix, top));
+            else if (IsMobile(b))
+                sb.Append(MobilePhone(ix, top));
+            else if (IsWindows(b))
+                sb.Append(WinTileMonitor(ix, top));
+            else
+                sb.Append(LinuxMonitor(ix, top));
             int labelY = top + IconH + 18;
             sb.Append($"<text x=\"{cx}\" y=\"{labelY}\" text-anchor=\"middle\" font-size=\"12\" font-weight=\"700\" fill=\"#111\">{XmlEscape(b.Ip ?? "")}</text>");
+
+            // Full FQDN directly under the IP — plain black text, no
+            // outline. Cell width is sized so labels like
+            // "navigation.allports.tours" fit without clipping.
+            var domain = (b.Domain ?? "").Trim();
+            if (domain.Length > 0)
+            {
+                sb.Append(FormattableString.Invariant(
+                    $"<text x=\"{cx}\" y=\"{labelY + 14}\" text-anchor=\"middle\" font-size=\"10\" fill=\"#111\">{XmlEscape(domain)}</text>"));
+            }
+
             sb.Append($"</g>\n");
             return sb.ToString();
         }
@@ -646,6 +719,41 @@ namespace jVision.Server.Download
                 $"<image x=\"{x}\" y=\"{y}\" width=\"52\" height=\"45\" preserveAspectRatio=\"xMidYMid meet\" href=\"{TuxAsset.DataUrl}\"/>");
         }
 
+        // Soft cloud silhouette used for cloud-tagged endpoints (S3 buckets,
+        // AWS/Azure/GCP surface). Fits the same 52x45 icon footprint so the
+        // grid stays aligned when a row mixes cloud and on-prem hosts.
+        private static string CloudMonitor(int x, int y)
+        {
+            var sb = new StringBuilder();
+            sb.Append(FormattableString.Invariant(
+                $"<g transform=\"translate({x},{y})\">"));
+            sb.Append("<path d=\"M 8 34 Q -2 34 -2 26 Q -2 18 8 18 Q 8 6 22 6 Q 36 6 38 18 Q 50 18 50 26 Q 50 34 40 34 Z\" fill=\"#bae6fd\" stroke=\"#0369a1\" stroke-width=\"1.8\" stroke-linejoin=\"round\"/>");
+            sb.Append("<ellipse cx=\"14\" cy=\"22\" rx=\"5\" ry=\"3\" fill=\"#e0f2fe\" stroke=\"none\"/>");
+            sb.Append("</g>");
+            return sb.ToString();
+        }
+
+        // Portrait smartphone silhouette for mobile hosts. Rounded body,
+        // small speaker slot at the top, home indicator at the bottom, and a
+        // subtle screen fill so the outline reads from a distance. Centred
+        // inside the same 52x45 icon footprint as every other icon.
+        private static string MobilePhone(int x, int y)
+        {
+            var sb = new StringBuilder();
+            sb.Append(FormattableString.Invariant(
+                $"<g transform=\"translate({x},{y})\">"));
+            // Body (portrait rounded rectangle, centred: x=17,w=18,h=43)
+            sb.Append("<rect x=\"17\" y=\"1\" width=\"18\" height=\"43\" rx=\"3\" ry=\"3\" fill=\"#1f2937\" stroke=\"#111827\" stroke-width=\"1\"/>");
+            // Screen
+            sb.Append("<rect x=\"19\" y=\"6\" width=\"14\" height=\"32\" rx=\"1\" ry=\"1\" fill=\"#60a5fa\"/>");
+            // Speaker slot
+            sb.Append("<rect x=\"24\" y=\"3.5\" width=\"4\" height=\"1.2\" rx=\"0.6\" ry=\"0.6\" fill=\"#9ca3af\"/>");
+            // Home indicator
+            sb.Append("<rect x=\"23\" y=\"40.5\" width=\"6\" height=\"1.6\" rx=\"0.8\" ry=\"0.8\" fill=\"#9ca3af\"/>");
+            sb.Append("</g>");
+            return sb.ToString();
+        }
+
         // ==================== helpers ====================
 
         private static string XmlEscape(string s)
@@ -668,7 +776,7 @@ namespace jVision.Server.Download
 
         public static byte[] RenderDrawio(List<Box> boxes)
         {
-            var grouped = GroupBySubnet(boxes);
+            var grouped = GroupByCategory(boxes);
             var layout = Compute(grouped);
 
             var ms = new MemoryStream();
@@ -707,17 +815,23 @@ namespace jVision.Server.Download
                     "shape=mxgraph.cisco.routers.router;html=1;fillColor=#2ea3c9;strokeColor=#1f80a3;fontColor=#111111;fontStyle=1;labelPosition=right;verticalLabelPosition=middle;align=left;verticalAlign=middle;",
                     layout.RouterX, RouterTopY, RouterW, RouterH);
 
-                // Edges attacker -> router -> subnet area
+                // Edges attacker -> router -> engagement frame
                 DrawioEdge(w, "e1", "1", "attacker", "router", downArrow: true);
 
-                // Sub-environments and their hosts
+                // Outer engagement container so operators can drag the whole
+                // network as one unit in draw.io.
+                DrawioVertex(w, "engagement", "1", OuterFrameLabel,
+                    "swimlane;html=1;fontStyle=1;startSize=26;fillColor=none;strokeColor=#333333;strokeWidth=1.4;dashed=1;dashPattern=6 4;fontColor=#111111;fontSize=13;",
+                    layout.OuterFrameX, layout.OuterFrameY, layout.OuterFrameW, layout.OuterFrameH);
+
+                // Category sub-environments and their hosts
                 for (int i = 0; i < grouped.Count; i++)
                 {
-                    var (subnet, hosts) = grouped[i];
+                    var (category, hosts) = grouped[i];
                     var (x, y, sw, sh) = layout.SubBoxes[i];
                     string subId = $"sub_{i}";
                     // draw.io swimlane coords are absolute for top-level children of "1".
-                    DrawioVertex(w, subId, "1", subnet,
+                    DrawioVertex(w, subId, "1", category,
                         "swimlane;html=1;fontStyle=1;startSize=26;fillColor=none;strokeColor=#333333;strokeWidth=1.2;dashed=1;dashPattern=4 3;fontColor=#111111;fontSize=12;",
                         x, y, sw, sh);
 

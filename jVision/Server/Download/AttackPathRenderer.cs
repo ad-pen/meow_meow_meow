@@ -35,31 +35,34 @@ namespace jVision.Server.Download
         // Horizontal (left→right) kill-chain layout. Attacker sits on the far
         // left, each successive hop is one card-column further right, and any
         // branches (one source pivoting to N targets) stack vertically inside
-        // the same column.
-        private const int NodeW = 110;
-        private const int NodeH = 100;
-        private const int HStep = 130;   // horizontal spacing between hop levels
-        private const int VStep = 44;    // vertical spacing between sibling branches
-        private const int PadX = 50;
-        private const int PadY = 24;     // top/bottom breathing room around the tree
-        private const int MinCanvasW = 640;
-        private const int MinCanvasH = 200;
+        // the same column. Vertical spacing is wide so branches never overlap
+        // and their arrows never cross.
+        // Dimensions are tuned so a fan-out of 8-10 sibling branches (typical
+        // for a CPTC engagement narrative) still fits a landscape report page
+        // rather than stretching into a one-column-wide strip. Increase them
+        // again if you need bigger badges/icons for a poster print.
+        private const int NodeW = 128;
+        private const int NodeH = 84;
+        private const int HStep = 150;   // horizontal spacing between hop levels
+        private const int VStep = 24;    // vertical spacing between sibling branches
+        private const int PadX = 40;
+        private const int PadY = 28;     // top/bottom breathing room around the tree
+        private const int MinCanvasW = 720;
+        private const int MinCanvasH = 220;
 
-        private const int IconInsetX = (NodeW - 52) / 2;
-        private const int IconInsetY = 10;
+        private const int IconInsetX = (NodeW - 48) / 2;
+        private const int IconInsetY = 8;
+        private const int IconSize = 48;
         private const int CornerRadius = 10;
 
-        // Legend block sizing.
-        private const int LegendTitleH = 40;
-        private const int LegendRowH = 26;
-        private const int LegendPadY = 24;
-        private const int LegendLeftX = 60;
-        private const int LegendColGap = 40;
-
-        // Symbols legend box (bottom-right of the canvas).
-        private const int SymbolLegendW = 230;
-        private const int SymbolLegendH = 180;
-        private const int SymbolBadgeVGap = 24;   // px above each arrow badge where the shape marker sits
+        // Symbols legend box (top-right of the canvas, sitting in the empty
+        // space beside the centered kill-chain tree).
+        private const int SymbolLegendW = 260;
+        private const int SymbolLegendH = 220;
+        private const int SymbolLegendMarginX = 60;
+        private const int SymbolLegendMarginY = 30;
+        private const int SymbolBadgeVGap = 26;   // px above each arrow badge where the shape marker sits
+        private const int LegendGutter = 40;      // horizontal gap between the tree and the legend column
 
         // --- render entry ------------------------------------------------------
 
@@ -82,31 +85,30 @@ namespace jVision.Server.Download
             LayoutTree(tree, PadX, PadY);
 
             // Walk the tree once to assign the display label ("★", "1", "A",
-            // "3", ...) and path id ("shared" or the branch letter) to every
-            // edge. This is what drives both the badges on the arrows and the
-            // grouped rows in the legend below.
+            // "3", ...) and path id to every edge. This drives the badges on
+            // the arrows. The per-edge narrative legend was removed, so path
+            // ids no longer feed a legend section — labels still exist purely
+            // for the badges.
             AssignLabels(tree);
 
-            // Group edges by path id for the legend. Shared prefix first, then
-            // each branch as its own column.
-            var sharedEdges = CollectEdgesByPath(tree, "shared");
-            var branchPaths = new SortedDictionary<string, List<TreeEdge>>(StringComparer.Ordinal);
-            CollectAllBranches(tree, branchPaths);
-            int maxBranchRows = branchPaths.Count == 0 ? 0 : branchPaths.Values.Max(v => v.Count);
+            // Canvas has to be tall enough for either the tree or the symbol
+            // legend riding along its top-right corner. Narrative panel was
+            // dropped — the diagram is the whole export.
+            int canvasH = Math.Max(MinCanvasH, tree.SubtreeH + 2 * PadY);
+            canvasH = Math.Max(canvasH, SymbolLegendH + 2 * PadY);
 
-            int legendBlockH = 0;
-            if (sharedEdges.Count + branchPaths.Values.Sum(v => v.Count) > 0)
-            {
-                int sharedBlockH = LegendTitleH + Math.Max(1, sharedEdges.Count) * LegendRowH + LegendPadY;
-                int branchBlockH = branchPaths.Count > 0
-                    ? LegendTitleH + Math.Max(1, maxBranchRows) * LegendRowH + LegendPadY
-                    : 0;
-                int symbolBlockH = SymbolLegendH + LegendPadY;
-                legendBlockH = sharedBlockH + branchBlockH + symbolBlockH;
-            }
+            // Tree span (leftmost X to rightmost X + NodeW) as laid out; we'll
+            // shift every node so this span sits centered inside a left column
+            // that excludes the legend, keeping tree + legend from colliding
+            // however tall the fan-out gets.
+            int rawTreeSpan = ComputeCanvasWidth(tree) - PadX;   // from attacker.left..deepest.right
+            int canvasW = Math.Max(MinCanvasW, PadX + rawTreeSpan + LegendGutter + SymbolLegendW + PadX);
+            canvasW = Math.Max(canvasW, 1400);   // report-friendly minimum width
 
-            int canvasW = Math.Max(MinCanvasW, ComputeCanvasWidth(tree) + PadX);
-            int canvasH = Math.Max(MinCanvasH, tree.SubtreeH + 2 * PadY) + legendBlockH;
+            // Left column ends where the legend column begins.
+            int treeAreaW = canvasW - SymbolLegendW - LegendGutter - 2 * PadX;
+            int centerShift = (treeAreaW - rawTreeSpan) / 2;
+            ShiftTree(tree, centerShift, 0);
 
             var sb = new StringBuilder();
             sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
@@ -125,159 +127,23 @@ namespace jVision.Server.Download
             DrawEdges(sb, tree);
             DrawNodes(sb, tree);
 
-            if (sharedEdges.Count + branchPaths.Values.Sum(v => v.Count) > 0)
-            {
-                int legendTopY = Math.Max(MinCanvasH, tree.SubtreeH + 2 * PadY);
-                DrawLegend(sb, sharedEdges, branchPaths, canvasW, canvasH, legendTopY);
-            }
+            // Symbol legend rides in the top-right column, vertically centered
+            // against the tree so the eye lands on it naturally.
+            int legendX = canvasW - SymbolLegendW - PadX;
+            int legendY = Math.Max(PadY, (canvasH - SymbolLegendH) / 2);
+            DrawSymbolLegend(sb, legendX, legendY);
 
             sb.Append("</svg>\n");
             return Encoding.UTF8.GetBytes(sb.ToString());
         }
 
-        // Three-section legend:
-        //   1. "Shared prefix"       — ★ + numbered edges before the first branch
-        //   2. "Path A" | "Path B" … — one column per branch subtree, side by side
-        //   3. "Techniques (symbol)" — boxed shape→technique key, bottom-right
-        private static void DrawLegend(StringBuilder sb,
-                                       List<TreeEdge> sharedEdges,
-                                       SortedDictionary<string, List<TreeEdge>> branchPaths,
-                                       int canvasW, int canvasH, int topY)
+        // Recursive X/Y shift used to center the laid-out tree inside the
+        // canvas after LayoutTree has assigned relative positions.
+        private static void ShiftTree(TreeNode node, int dx, int dy)
         {
-            int y = topY;
-
-            // 1) Shared prefix
-            y = DrawLegendSection(sb, "Shared prefix", sharedEdges, LegendLeftX, canvasW - LegendLeftX, y);
-
-            // 2) Side-by-side branch columns
-            if (branchPaths.Count > 0)
-            {
-                int totalInner = canvasW - 2 * LegendLeftX;
-                int columnW = (totalInner - LegendColGap * (branchPaths.Count - 1)) / branchPaths.Count;
-
-                // Separator + column titles
-                sb.Append(FormattableString.Invariant(
-                    $"<line x1=\"{LegendLeftX}\" y1=\"{y}\" x2=\"{canvasW - LegendLeftX}\" y2=\"{y}\" stroke=\"#cbd5e1\" stroke-width=\"1\"/>\n"));
-
-                int titleY = y + 26;
-                int colIdx = 0;
-                foreach (var kv in branchPaths)
-                {
-                    int colX = LegendLeftX + colIdx * (columnW + LegendColGap);
-                    sb.Append(FormattableString.Invariant(
-                        $"<text x=\"{colX}\" y=\"{titleY}\" font-size=\"15\" font-weight=\"700\" fill=\"#111\">Path {kv.Key}</text>\n"));
-                    colIdx++;
-                }
-
-                int rowsBase = y + LegendTitleH + 4;
-                colIdx = 0;
-                int deepest = 0;
-                foreach (var kv in branchPaths)
-                {
-                    int colX = LegendLeftX + colIdx * (columnW + LegendColGap);
-                    int rowY = rowsBase;
-                    foreach (var e in kv.Value)
-                    {
-                        DrawLegendRow(sb, colX, rowY, e, columnW);
-                        rowY += LegendRowH;
-                    }
-                    if (rowY > deepest) deepest = rowY;
-                    colIdx++;
-                }
-                y = deepest + LegendPadY - LegendRowH;
-            }
-
-            // 3) Techniques (symbol) legend — bottom-right corner
-            DrawSymbolLegend(sb, canvasW - SymbolLegendW - LegendLeftX, canvasH - SymbolLegendH - 20);
-        }
-
-        // Draws a titled section: separator line + section header + one row
-        // per edge. Returns the y-coordinate right below the last row so the
-        // next section can stack.
-        private static int DrawLegendSection(StringBuilder sb, string title, List<TreeEdge> edges,
-                                             int leftX, int rightX, int topY)
-        {
-            sb.Append(FormattableString.Invariant(
-                $"<line x1=\"{leftX}\" y1=\"{topY}\" x2=\"{rightX}\" y2=\"{topY}\" stroke=\"#cbd5e1\" stroke-width=\"1\"/>\n"));
-            sb.Append(FormattableString.Invariant(
-                $"<text x=\"{leftX}\" y=\"{topY + 26}\" font-size=\"15\" font-weight=\"700\" fill=\"#111\">{XmlEscape(title)}</text>\n"));
-
-            int rowY = topY + LegendTitleH + 4;
-            int fullW = rightX - leftX;
-            foreach (var e in edges)
-            {
-                DrawLegendRow(sb, leftX, rowY, e, fullW);
-                rowY += LegendRowH;
-            }
-            return rowY + LegendPadY - LegendRowH;
-        }
-
-        // One legend row: badge (matching the arrow), colour-blind shape,
-        // then "src → dst · technique · label" text. widthBudget is the
-        // horizontal room the row has — long descriptions get ellipsised so
-        // side-by-side columns never bleed into each other.
-        private static void DrawLegendRow(StringBuilder sb, int leftX, int y, TreeEdge e, int widthBudget)
-        {
-            string tech = e.Pivot?.Technique;
-            string colour = e.Pivot == null ? "#334155" : TechniqueColour(tech);
-            int badgeCx = leftX + 11;
-            int badgeCy = y + 8;
-            int fontSize = (e.DisplayLabel?.Length ?? 1) >= 3 ? 9 : 12;
-            sb.Append(FormattableString.Invariant(
-                $"<circle cx=\"{badgeCx}\" cy=\"{badgeCy}\" r=\"11\" fill=\"{colour}\" stroke=\"#ffffff\" stroke-width=\"1.5\"/>\n"));
-            sb.Append(FormattableString.Invariant(
-                $"<text x=\"{badgeCx}\" y=\"{badgeCy + 4}\" text-anchor=\"middle\" font-size=\"{fontSize}\" font-weight=\"800\" fill=\"#ffffff\">{XmlEscape(e.DisplayLabel ?? "")}</text>\n"));
-
-            int shapeX = leftX + 34;
-            if (!string.IsNullOrEmpty(tech))
-                sb.Append(TechniqueSymbol(tech, shapeX, badgeCy, colour));
-
-            int textX = leftX + 50;
-            int textRoom = Math.Max(60, widthBudget - (textX - leftX) - 8);
-            const int fs = 13;
-            const double charW = fs * 0.58;
-
-            string src, dst, techLabel, description;
-            if (e.Pivot == null)
-            {
-                src = "attacker";
-                dst = XmlEscape(e.Target?.Ip ?? "");
-                techLabel = "";
-                description = "initial access";
-            }
-            else
-            {
-                src = XmlEscape(e.Pivot.SourceIp ?? "");
-                dst = XmlEscape(e.Pivot.TargetIp ?? "");
-                techLabel = XmlEscape((e.Pivot.Technique ?? "other").Trim());
-                description = XmlEscape((e.Pivot.Label ?? "").Trim());
-            }
-
-            // Assemble a plain-text version to measure length, then compose
-            // the tspan-rich body separately so bold rendering isn't lost.
-            string plain = $"{src} → {dst}";
-            if (!string.IsNullOrEmpty(techLabel)) plain += "  ·  " + techLabel;
-            if (!string.IsNullOrEmpty(description)) plain += "  ·  " + description;
-
-            int maxChars = Math.Max(6, (int)Math.Floor(textRoom / charW));
-            if (plain.Length > maxChars)
-            {
-                // Ellipsise the description first (usually the longest piece)
-                int overflow = plain.Length - maxChars + 1;
-                if (description.Length > overflow)
-                    description = description.Substring(0, description.Length - overflow) + "…";
-                else
-                    description = description.Length > 0 ? "…" : "";
-            }
-
-            string body = $"{src} → {dst}";
-            if (!string.IsNullOrEmpty(techLabel))
-                body += $"  ·  <tspan font-weight=\"700\">{techLabel}</tspan>";
-            if (!string.IsNullOrEmpty(description))
-                body += "  ·  " + description;
-
-            sb.Append(FormattableString.Invariant(
-                $"<text x=\"{textX}\" y=\"{badgeCy + 5}\" font-size=\"{fs}\" fill=\"{colour}\">{body}</text>\n"));
+            node.X += dx;
+            node.Y += dy;
+            foreach (var e in node.Children) ShiftTree(e.Target, dx, dy);
         }
 
         // Boxed "shape → technique" key, positioned in the bottom-right of the
@@ -285,19 +151,19 @@ namespace jVision.Server.Download
         private static void DrawSymbolLegend(StringBuilder sb, int x, int y)
         {
             sb.Append(FormattableString.Invariant(
-                $"<rect x=\"{x}\" y=\"{y}\" width=\"{SymbolLegendW}\" height=\"{SymbolLegendH}\" rx=\"8\" ry=\"8\" fill=\"#ffffff\" stroke=\"#94a3b8\" stroke-width=\"1\"/>\n"));
+                $"<rect x=\"{x}\" y=\"{y}\" width=\"{SymbolLegendW}\" height=\"{SymbolLegendH}\" rx=\"10\" ry=\"10\" fill=\"#ffffff\" stroke=\"#94a3b8\" stroke-width=\"1.2\"/>\n"));
             sb.Append(FormattableString.Invariant(
-                $"<text x=\"{x + 14}\" y=\"{y + 22}\" font-size=\"14\" font-weight=\"700\" fill=\"#111\">Techniques (symbol)</text>\n"));
+                $"<text x=\"{x + 18}\" y=\"{y + 30}\" font-size=\"17\" font-weight=\"700\" fill=\"#111\">Techniques (symbol)</text>\n"));
 
             string[] techs = { "creds", "exploit", "session", "relay", "rce", "phish" };
-            int rowY = y + 46;
+            int rowY = y + 60;
             foreach (var t in techs)
             {
                 string col = TechniqueColour(t);
-                sb.Append(TechniqueSymbol(t, x + 26, rowY, col));
+                sb.Append(TechniqueSymbol(t, x + 34, rowY, col));
                 sb.Append(FormattableString.Invariant(
-                    $"<text x=\"{x + 44}\" y=\"{rowY + 5}\" font-size=\"13\" font-weight=\"600\" fill=\"{col}\">{t}</text>\n"));
-                rowY += 22;
+                    $"<text x=\"{x + 58}\" y=\"{rowY + 6}\" font-size=\"16\" font-weight=\"600\" fill=\"{col}\">{t}</text>\n"));
+                rowY += 26;
             }
         }
 
@@ -309,6 +175,7 @@ namespace jVision.Server.Download
             public string Label;         // display text (IP or "Attacker")
             public bool IsAttacker;
             public bool IsWindows;
+            public bool IsCloud;         // hosted-cloud endpoint (S3 / AWS / etc.)
             public int X;
             public int Y;
             public int SubtreeH;         // total vertical span of this subtree
@@ -341,11 +208,14 @@ namespace jVision.Server.Download
             TreeNode GetOrCreate(string ip)
             {
                 if (nodesByIp.TryGetValue(ip, out var n)) return n;
+                Box b = null;
+                boxByIp.TryGetValue(ip, out b);
                 n = new TreeNode
                 {
                     Ip = ip,
                     Label = ip,
-                    IsWindows = boxByIp.TryGetValue(ip, out var b) && IsWindowsBox(b),
+                    IsWindows = b != null && IsWindowsBox(b),
+                    IsCloud = b != null && IsCloudBox(b),
                 };
                 nodesByIp[ip] = n;
                 return n;
@@ -462,43 +332,6 @@ namespace jVision.Server.Download
             }
         }
 
-        // Collect every edge whose PathId matches, in DFS order.
-        private static List<TreeEdge> CollectEdgesByPath(TreeNode root, string pathId)
-        {
-            var acc = new List<TreeEdge>();
-            void Walk(TreeNode n)
-            {
-                foreach (var e in n.Children)
-                {
-                    if (string.Equals(e.PathId, pathId, StringComparison.Ordinal))
-                        acc.Add(e);
-                    Walk(e.Target);
-                }
-            }
-            Walk(root);
-            return acc;
-        }
-
-        // Collect every branch subtree (edges with PathId != "shared"), grouped
-        // by path id. Ordered by path id so "A" precedes "B" precedes "A.a".
-        private static void CollectAllBranches(TreeNode root, SortedDictionary<string, List<TreeEdge>> acc)
-        {
-            void Walk(TreeNode n)
-            {
-                foreach (var e in n.Children)
-                {
-                    if (!string.Equals(e.PathId, "shared", StringComparison.Ordinal) && e.PathId != null)
-                    {
-                        if (!acc.TryGetValue(e.PathId, out var list))
-                            acc[e.PathId] = list = new List<TreeEdge>();
-                        list.Add(e);
-                    }
-                    Walk(e.Target);
-                }
-            }
-            Walk(root);
-        }
-
         // --- tree layout (left→right, subtree-centering) -----------------------
 
         // Place `node` at column X = `x`, then recursively place each child
@@ -566,19 +399,21 @@ namespace jVision.Server.Download
         {
             // Card background (rounded rect with subtle border)
             sb.Append(FormattableString.Invariant(
-                $"<rect x=\"{n.X}\" y=\"{n.Y}\" width=\"{NodeW}\" height=\"{NodeH}\" rx=\"10\" ry=\"10\" fill=\"#ffffff\" stroke=\"#94a3b8\" stroke-width=\"1.2\"/>\n"));
+                $"<rect x=\"{n.X}\" y=\"{n.Y}\" width=\"{NodeW}\" height=\"{NodeH}\" rx=\"{CornerRadius}\" ry=\"{CornerRadius}\" fill=\"#ffffff\" stroke=\"#94a3b8\" stroke-width=\"1.4\"/>\n"));
 
             int iconX = n.X + IconInsetX;
             int iconY = n.Y + IconInsetY;
             if (n.IsAttacker)
                 sb.Append(AttackerIcon(iconX, iconY));
+            else if (n.IsCloud)
+                sb.Append(CloudIcon(iconX, iconY));
             else if (n.IsWindows)
                 sb.Append(WindowsIcon(iconX, iconY));
             else
                 sb.Append(TuxIcon(iconX, iconY));
 
             // Label under the icon
-            int labelY = n.Y + NodeH - 12;
+            int labelY = n.Y + NodeH - 10;
             string label = n.IsAttacker ? "ATTACKER" : (n.Label ?? "");
             sb.Append(FormattableString.Invariant(
                 $"<text x=\"{n.X + NodeW / 2}\" y=\"{labelY}\" text-anchor=\"middle\" font-size=\"12\" font-weight=\"700\" fill=\"#111\">{XmlEscape(label)}</text>\n"));
@@ -586,17 +421,27 @@ namespace jVision.Server.Download
 
         private static void DrawEdges(StringBuilder sb, TreeNode node)
         {
-            foreach (var c in node.Children)
+            if (node.Children.Count == 1)
             {
-                DrawEdge(sb, node, c);
-                DrawEdges(sb, c.Target);
+                DrawSingleEdge(sb, node, node.Children[0]);
             }
+            else if (node.Children.Count > 1)
+            {
+                DrawFanOut(sb, node);
+            }
+            foreach (var c in node.Children)
+                DrawEdges(sb, c.Target);
         }
 
-        private static void DrawEdge(StringBuilder sb, TreeNode parent, TreeEdge edge)
+        // Neutral colour for the shared parent→trunk stub of a fanout. The
+        // colored branches to each child overlay it starting at the trunk.
+        private const string TrunkColour = "#94a3b8";
+
+        // Single-child edge — clean S-path from parent's right-middle to
+        // child's left-middle. No siblings means no channel contention.
+        private static void DrawSingleEdge(StringBuilder sb, TreeNode parent, TreeEdge edge)
         {
             var child = edge.Target;
-            // Exit parent from right-middle, enter child at left-middle.
             int sx = parent.X + NodeW;
             int sy = parent.Y + NodeH / 2;
             int tx = child.X;
@@ -604,100 +449,106 @@ namespace jVision.Server.Download
 
             string colour = edge.Pivot == null ? "#334155" : TechniqueColour(edge.Pivot.Technique);
             string marker = ArrowMarker(colour);
-
-            // Orthogonal S-path: right → up/down → right. For siblings placed
-            // vertically off-axis we insert a small vertical jog through the
-            // midpoint column so every arrow shares the same "channel" x.
-            string path;
-            int midX = (sx + tx) / 2;
             int r = CornerRadius;
+            int midX = (sx + tx) / 2;
+
+            string path;
             if (sy == ty)
             {
-                // Straight horizontal — same row, no branch needed.
                 path = FormattableString.Invariant($"M {sx} {sy} H {tx - 2}");
             }
             else
             {
-                int dir = ty > sy ? 1 : -1;             // +1 = child sits below parent
-                int seg1EndX = midX - r;
+                int dir = ty > sy ? 1 : -1;
+                int seg1EndX = Math.Max(sx + r, midX - r);
                 int seg2StartY = sy + dir * r;
                 int seg2EndY = ty - dir * r;
-                int seg2StartX = midX + r;
-                if (seg1EndX < sx + r) seg1EndX = sx + r;
-                if (seg2StartX > tx - r) seg2StartX = tx - r;
+                int seg2StartX = Math.Min(tx - r, midX + r);
+                int sw1 = dir > 0 ? 1 : 0;
+                int sw2 = dir > 0 ? 0 : 1;
 
-                // Sweep flags for right-then-down vs right-then-up. In SVG's
-                // y-down coord system, right→down is a clockwise (sweep=1)
-                // turn, right→up is counterclockwise (sweep=0). Down→right and
-                // up→right mirror.
-                int sw1 = dir > 0 ? 1 : 0;   // right→down or right→up
-                int sw2 = dir > 0 ? 0 : 1;   // down→right or up→right
-
-                var pb = new StringBuilder();
-                pb.Append(FormattableString.Invariant($"M {sx} {sy}"));
-                pb.Append(FormattableString.Invariant($" H {seg1EndX}"));
-                pb.Append(FormattableString.Invariant($" A {r} {r} 0 0 {sw1} {midX} {seg2StartY}"));
-                pb.Append(FormattableString.Invariant($" V {seg2EndY}"));
-                pb.Append(FormattableString.Invariant($" A {r} {r} 0 0 {sw2} {seg2StartX} {ty}"));
-                pb.Append(FormattableString.Invariant($" H {tx - 2}"));
-                path = pb.ToString();
+                path = FormattableString.Invariant(
+                    $"M {sx} {sy} H {seg1EndX} A {r} {r} 0 0 {sw1} {midX} {seg2StartY} V {seg2EndY} A {r} {r} 0 0 {sw2} {seg2StartX} {ty} H {tx - 2}");
             }
-            sb.Append($"<path d=\"{path}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" marker-end=\"url(#{marker})\"/>\n");
+            sb.Append($"<path d=\"{path}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"3.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" marker-end=\"url(#{marker})\"/>\n");
 
-            // Badge (label from AssignLabels — number, letter, or ★) plus a
-            // colour-blind shape marker floating a bit above so the reader can
-            // identify the technique without relying on colour alone. The ★
-            // initial-access edge has no Pivot/technique so the symbol call
-            // returns empty for it.
             int badgeX = midX;
             int badgeY = ty;
             sb.Append(BuildStepBadge(badgeX, badgeY, edge.DisplayLabel ?? edge.StepNumber.ToString(CultureInfo.InvariantCulture), colour));
             sb.Append(TechniqueSymbol(edge.Pivot?.Technique, badgeX, badgeY - SymbolBadgeVGap, colour));
         }
 
-        // Pill sizing helper — figures out the actual pill width for a label
-        // (respecting a maximum width) and returns the final text after any
-        // ellipsis truncation. Kept separate from BuildLabelPillFixed so the
-        // caller can lay out sibling groups symmetrically.
-        private static (int pillW, int pillH, string label) MeasurePill(string label, int maxPillW)
+        // Multi-child fanout: single vertical trunk shared by all siblings
+        // (drawn once in a neutral colour), then each sibling gets its own
+        // horizontal branch off the trunk at the child's y-level, colored by
+        // technique. This eliminates the "middle sibling's straight line runs
+        // through the outer siblings' vertical channels" crossing that the
+        // per-sibling S-path routing produced.
+        private static void DrawFanOut(StringBuilder sb, TreeNode parent)
         {
-            const int fontSize = 13;
-            const int padX = 10;
-            const int padY = 5;
-            const double charW = fontSize * 0.58;
-            int pillH = fontSize + 2 * padY + 2;
-            if (string.IsNullOrEmpty(label)) return (0, pillH, "");
-            int maxChars = Math.Max(3, (int)Math.Floor((maxPillW - 2 * padX) / charW));
-            if (label.Length > maxChars) label = label.Substring(0, maxChars - 1) + "…";
-            int textW = (int)Math.Ceiling(label.Length * charW);
-            int pillW = textW + 2 * padX;
-            return (pillW, pillH, label);
-        }
+            int sx = parent.X + NodeW;
+            int sy = parent.Y + NodeH / 2;
+            // All siblings share the same X (LayoutTree places them all one
+            // column further right), so any child's X works as the trunk-to-
+            // child gap reference.
+            int childX = parent.Children[0].Target.X;
+            // Trunk sits ~40% of the way from parent to the child column, so
+            // the horizontal branches into each child have room for a badge.
+            int trunkX = sx + (childX - sx) * 4 / 10;
 
-        private static string BuildLabelPillFixed(int leftX, int cy, string label, string colour, int pillW, int pillH)
-        {
-            const int fontSize = 13;
-            const int padX = 10;
-            int rx = pillH / 2;
-            var sb = new StringBuilder();
+            // Trunk vertical spans from top-most to bottom-most child y, and
+            // is extended to include parent's y so the parent stub connects
+            // cleanly at the T-junction.
+            int topY = int.MaxValue, botY = int.MinValue;
+            foreach (var c in parent.Children)
+            {
+                int cy = c.Target.Y + NodeH / 2;
+                if (cy < topY) topY = cy;
+                if (cy > botY) botY = cy;
+            }
+            int trunkTop = Math.Min(sy, topY);
+            int trunkBot = Math.Max(sy, botY);
+
+            // Neutral trunk: parent stub + vertical spine. Rendered as a
+            // single path so the T-junction stays crisp.
             sb.Append(FormattableString.Invariant(
-                $"<rect x=\"{leftX}\" y=\"{cy - pillH / 2}\" width=\"{pillW}\" height=\"{pillH}\" rx=\"{rx}\" ry=\"{rx}\" fill=\"#ffffff\" stroke=\"{colour}\" stroke-width=\"1.4\"/>\n"));
-            sb.Append(FormattableString.Invariant(
-                $"<text x=\"{leftX + padX}\" y=\"{cy + fontSize / 3}\" text-anchor=\"start\" font-size=\"{fontSize}\" font-weight=\"700\" fill=\"{colour}\">{XmlEscape(label)}</text>\n"));
-            return sb.ToString();
+                $"<path d=\"M {sx} {sy} H {trunkX} M {trunkX} {trunkTop} V {trunkBot}\" fill=\"none\" stroke=\"{TrunkColour}\" stroke-width=\"2.8\" stroke-linecap=\"round\"/>\n"));
+
+            // One coloured branch per child, off the trunk at the child's y.
+            foreach (var edge in parent.Children)
+            {
+                var child = edge.Target;
+                int tx = child.X;
+                int ty = child.Y + NodeH / 2;
+                string colour = edge.Pivot == null ? "#334155" : TechniqueColour(edge.Pivot.Technique);
+                string marker = ArrowMarker(colour);
+
+                sb.Append(FormattableString.Invariant(
+                    $"<path d=\"M {trunkX} {ty} H {tx - 2}\" fill=\"none\" stroke=\"{colour}\" stroke-width=\"3.2\" stroke-linecap=\"round\" marker-end=\"url(#{marker})\"/>\n"));
+
+                // Small coloured tap where the branch leaves the trunk so
+                // each branch's technique colour reads at the junction too.
+                sb.Append(FormattableString.Invariant(
+                    $"<circle cx=\"{trunkX}\" cy=\"{ty}\" r=\"5\" fill=\"{colour}\"/>\n"));
+
+                int badgeX = (trunkX + tx) / 2;
+                int badgeY = ty;
+                sb.Append(BuildStepBadge(badgeX, badgeY, edge.DisplayLabel ?? edge.StepNumber.ToString(CultureInfo.InvariantCulture), colour));
+                sb.Append(TechniqueSymbol(edge.Pivot?.Technique, badgeX, badgeY - SymbolBadgeVGap, colour));
+            }
         }
 
         private static string BuildStepBadge(int cx, int cy, string label, string colour)
         {
             // Compact labels ("A", "3") use the standard font; wider labels
             // ("A.a") shrink one step so they don't clip the badge outline.
-            int r = 13;
-            int fontSize = (label?.Length ?? 1) >= 3 ? 10 : 13;
+            int r = 16;
+            int fontSize = (label?.Length ?? 1) >= 3 ? 12 : 16;
             var sb = new StringBuilder();
             sb.Append(FormattableString.Invariant(
-                $"<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{r}\" fill=\"{colour}\" stroke=\"#ffffff\" stroke-width=\"2\"/>\n"));
+                $"<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{r}\" fill=\"{colour}\" stroke=\"#ffffff\" stroke-width=\"3\"/>\n"));
             sb.Append(FormattableString.Invariant(
-                $"<text x=\"{cx}\" y=\"{cy + 4}\" text-anchor=\"middle\" font-size=\"{fontSize}\" font-weight=\"800\" fill=\"#ffffff\">{XmlEscape(label ?? "")}</text>\n"));
+                $"<text x=\"{cx}\" y=\"{cy + fontSize / 3}\" text-anchor=\"middle\" font-size=\"{fontSize}\" font-weight=\"800\" fill=\"#ffffff\">{XmlEscape(label ?? "")}</text>\n"));
             return sb.ToString();
         }
 
@@ -709,55 +560,21 @@ namespace jVision.Server.Download
             switch ((technique ?? "").ToLowerInvariant())
             {
                 case "creds":
-                    return FormattableString.Invariant($"<path transform=\"translate({x},{y})\" d=\"M 0 -6 L 6 0 L 0 6 L -6 0 Z\" fill=\"{colour}\"/>");
+                    return FormattableString.Invariant($"<path transform=\"translate({x},{y})\" d=\"M 0 -11 L 11 0 L 0 11 L -11 0 Z\" fill=\"{colour}\"/>");
                 case "exploit":
-                    return FormattableString.Invariant($"<path transform=\"translate({x},{y})\" d=\"M 0 -6 L 6 5 L -6 5 Z\" fill=\"{colour}\"/>");
+                    return FormattableString.Invariant($"<path transform=\"translate({x},{y})\" d=\"M 0 -11 L 11 9 L -11 9 Z\" fill=\"{colour}\"/>");
                 case "session":
-                    return FormattableString.Invariant($"<circle cx=\"{x}\" cy=\"{y}\" r=\"5\" fill=\"{colour}\"/>");
+                    return FormattableString.Invariant($"<circle cx=\"{x}\" cy=\"{y}\" r=\"9\" fill=\"{colour}\"/>");
                 case "relay":
-                    return FormattableString.Invariant($"<rect x=\"{x - 5}\" y=\"{y - 5}\" width=\"10\" height=\"10\" fill=\"{colour}\"/>");
+                    return FormattableString.Invariant($"<rect x=\"{x - 9}\" y=\"{y - 9}\" width=\"18\" height=\"18\" fill=\"{colour}\"/>");
                 case "rce":
-                    return FormattableString.Invariant($"<line x1=\"{x - 5}\" y1=\"{y - 5}\" x2=\"{x + 5}\" y2=\"{y + 5}\" stroke=\"{colour}\" stroke-width=\"2.4\" stroke-linecap=\"round\"/>")
-                         + FormattableString.Invariant($"<line x1=\"{x + 5}\" y1=\"{y - 5}\" x2=\"{x - 5}\" y2=\"{y + 5}\" stroke=\"{colour}\" stroke-width=\"2.4\" stroke-linecap=\"round\"/>");
+                    return FormattableString.Invariant($"<line x1=\"{x - 9}\" y1=\"{y - 9}\" x2=\"{x + 9}\" y2=\"{y + 9}\" stroke=\"{colour}\" stroke-width=\"3.6\" stroke-linecap=\"round\"/>")
+                         + FormattableString.Invariant($"<line x1=\"{x + 9}\" y1=\"{y - 9}\" x2=\"{x - 9}\" y2=\"{y + 9}\" stroke=\"{colour}\" stroke-width=\"3.6\" stroke-linecap=\"round\"/>");
                 case "phish":
-                    return FormattableString.Invariant($"<path transform=\"translate({x},{y})\" d=\"M -5 -3 L 0 -6 L 5 -3 L 5 3 L 0 6 L -5 3 Z\" fill=\"{colour}\"/>");
+                    return FormattableString.Invariant($"<path transform=\"translate({x},{y})\" d=\"M -9 -5 L 0 -11 L 9 -5 L 9 5 L 0 11 L -9 5 Z\" fill=\"{colour}\"/>");
                 default:
                     return "";
             }
-        }
-
-        private static string BuildLabelPill(int leftX, int cy, string label, string colour, int maxPillW = int.MaxValue)
-        {
-            const int fontSize = 13;
-            const int padX = 10;
-            const int padY = 5;
-            const double charW = fontSize * 0.58;
-            // Fit-to-width: if the naive pill would spill past maxPillW,
-            // truncate the label with an ellipsis so we stay inside the
-            // arrow's horizontal segment and never draw over the child icon.
-            int maxChars = Math.Max(4, (int)Math.Floor((maxPillW - 2 * padX) / charW));
-            if (label.Length > maxChars) label = label.Substring(0, maxChars - 1) + "…";
-            int textW = (int)Math.Ceiling(label.Length * charW);
-            int pillW = textW + 2 * padX;
-            int pillH = fontSize + 2 * padY + 2;
-            int rx = pillH / 2;
-            var sb = new StringBuilder();
-            sb.Append(FormattableString.Invariant(
-                $"<rect x=\"{leftX}\" y=\"{cy - pillH / 2}\" width=\"{pillW}\" height=\"{pillH}\" rx=\"{rx}\" ry=\"{rx}\" fill=\"#ffffff\" stroke=\"{colour}\" stroke-width=\"1.4\"/>\n"));
-            sb.Append(FormattableString.Invariant(
-                $"<text x=\"{leftX + padX}\" y=\"{cy + fontSize / 3}\" text-anchor=\"start\" font-size=\"{fontSize}\" font-weight=\"700\" fill=\"{colour}\">{XmlEscape(label)}</text>\n"));
-            return sb.ToString();
-        }
-
-        private static string FormatEdgeLabel(TreeEdge edge)
-        {
-            if (edge.Pivot == null) return "initial access";
-            var pieces = new List<string>();
-            if (!string.IsNullOrWhiteSpace(edge.Pivot.Technique) && edge.Pivot.Technique != "other")
-                pieces.Add(edge.Pivot.Technique);
-            if (!string.IsNullOrWhiteSpace(edge.Pivot.Label))
-                pieces.Add(edge.Pivot.Label);
-            return Ellipsize(string.Join(": ", pieces), 44);
         }
 
         private static string TechniqueColour(string t) => (t ?? "").ToLowerInvariant() switch
@@ -773,21 +590,23 @@ namespace jVision.Server.Download
 
         // --- icons (reused visual language from TopologyRenderer) --------------
 
-        // Base64-embedded Tux PNG in the 52x45 icon footprint, letterboxed so
-        // the aspect ratio isn't squashed.
+        // Base64-embedded Tux PNG scaled to the IconSize footprint (68x60),
+        // letterboxed so the aspect ratio isn't squashed.
         private static string TuxIcon(int x, int y)
         {
             return FormattableString.Invariant(
-                $"<image x=\"{x}\" y=\"{y}\" width=\"52\" height=\"45\" preserveAspectRatio=\"xMidYMid meet\" href=\"{TuxAsset.DataUrl}\"/>");
+                $"<image x=\"{x}\" y=\"{y}\" width=\"{IconSize}\" height=\"{IconSize - 8}\" preserveAspectRatio=\"xMidYMid meet\" href=\"{TuxAsset.DataUrl}\"/>");
         }
 
-        // Windows: the four-colour flag standalone (no monitor frame), sized
-        // and positioned to visually balance Tux at the same 52x45 footprint.
+        // Windows: the four-colour flag standalone (no monitor frame), scaled
+        // via SVG transform so it matches Tux's footprint.
         private static string WindowsIcon(int x, int y)
         {
+            // The tile artwork below is authored for a 52-unit box; scale to
+            // IconSize so it grows with the rest of the diagram.
+            double scale = IconSize / 52.0;
             var sb = new StringBuilder();
-            sb.Append($"<g transform=\"translate({x},{y})\">");
-            // Slight vertical centring gap so the flag sits mid-cell
+            sb.Append(FormattableString.Invariant($"<g transform=\"translate({x},{y}) scale({scale:0.###})\">"));
             sb.Append("<path d=\"M 6 8 L 25 5 L 25 22 L 6 24 Z\" fill=\"#f25022\"/>");
             sb.Append("<path d=\"M 27 5 L 47 3 L 47 22 L 27 22 Z\" fill=\"#7fba00\"/>");
             sb.Append("<path d=\"M 6 26 L 25 24 L 25 41 L 6 43 Z\" fill=\"#00a4ef\"/>");
@@ -796,10 +615,25 @@ namespace jVision.Server.Download
             return sb.ToString();
         }
 
+        // Soft cyan cloud silhouette used for boxes tagged as S3/AWS/hosted-
+        // cloud endpoints. Scaled to the same 52-unit design box as the other
+        // icons so it lines up with the Tux/Windows drawings.
+        private static string CloudIcon(int x, int y)
+        {
+            double scale = IconSize / 52.0;
+            var sb = new StringBuilder();
+            sb.Append(FormattableString.Invariant($"<g transform=\"translate({x},{y}) scale({scale:0.###})\">"));
+            sb.Append("<path d=\"M 8 40 Q -2 40 -2 30 Q -2 20 10 20 Q 10 6 24 6 Q 38 6 40 20 Q 52 20 52 30 Q 52 40 40 40 Z\" fill=\"#bae6fd\" stroke=\"#0369a1\" stroke-width=\"1.8\" stroke-linejoin=\"round\"/>");
+            sb.Append("<ellipse cx=\"16\" cy=\"26\" rx=\"5\" ry=\"3\" fill=\"#e0f2fe\" stroke=\"none\"/>");
+            sb.Append("</g>");
+            return sb.ToString();
+        }
+
         private static string AttackerIcon(int x, int y)
         {
+            double scale = IconSize / 52.0;
             var sb = new StringBuilder();
-            sb.Append($"<g transform=\"translate({x},{y})\">");
+            sb.Append(FormattableString.Invariant($"<g transform=\"translate({x},{y}) scale({scale:0.###})\">"));
             sb.Append("<rect x=\"0\" y=\"20\" width=\"52\" height=\"35\" rx=\"3\" fill=\"#111\" stroke=\"#000\" stroke-width=\"1.2\"/>");
             sb.Append("<rect x=\"3\" y=\"23\" width=\"46\" height=\"27\" fill=\"#1e293b\"/>");
             // Hood
@@ -830,6 +664,18 @@ namespace jVision.Server.Download
             return false;
         }
 
+        private static readonly string[] _cloudKeywords = { "cloud", "aws", "azure", "gcp", "s3" };
+
+        // Any box whose hostname OR domain mentions a cloud provider / bucket
+        // gets the cloud icon instead of Tux — the attack story often pivots
+        // through S3 buckets and it's useful to see that visually.
+        private static bool IsCloudBox(Box b)
+        {
+            var hn = (b.Hostname ?? "").ToLowerInvariant();
+            var dm = (b.Domain ?? "").ToLowerInvariant();
+            return _cloudKeywords.Any(k => hn.Contains(k) || dm.Contains(k));
+        }
+
         private static string XmlEscape(string s)
         {
             if (string.IsNullOrEmpty(s)) return "";
@@ -838,7 +684,5 @@ namespace jVision.Server.Download
                     .Replace("'", "&apos;");
         }
 
-        private static string Ellipsize(string s, int max) =>
-            (s?.Length ?? 0) <= max ? (s ?? "") : s.Substring(0, max - 1) + "…";
     }
 }
