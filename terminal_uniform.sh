@@ -29,6 +29,13 @@
 # Surgical: only the appearance keys below are touched; every other preference is
 # left alone. Idempotent - safe to re-run. Each config is backed up once (*.cptcbak).
 #
+# NEEDS ROOT FOR THE QTERMINAL HALF. qtermwidget only reads colour schemes from
+# /usr/share/qtermwidget*/color-schemes - not from the user's ~/.local/share - so the
+# generated scheme has to be installed system-wide. Without root the script degrades
+# to a built-in dark scheme rather than selecting one qterminal cannot load, because
+# an unresolvable scheme silently yields a WHITE background (see install_qt_scheme).
+# start.sh primes sudo before calling this; standalone, expect a password prompt.
+#
 # Usage:  bash terminal_uniform.sh
 #
 # IMPORTANT: qterminal rewrites its ENTIRE config file to its in-memory settings
@@ -100,7 +107,16 @@ apply_uniform() {
         printf '[%s]\n' "$section" > "$f"
         echo "[*] No $(basename "$f") yet - created a fresh one."
     fi
-    cp -n "$f" "$f.cptcbak" && echo "[+] Backed up current config -> $f.cptcbak"
+    # Back up once, and only claim it when it actually happened: `cp -n` exits 0 when
+    # it SKIPS an existing target, so the old `cp -n ... && echo "Backed up"` reported
+    # a fresh backup on every re-run while leaving the original (possibly long stale)
+    # .cptcbak in place.
+    if [ -e "$f.cptcbak" ]; then
+        echo "[*] Backup already exists, left as-is -> $f.cptcbak"
+        echo "    (it is from the FIRST run, not the current file - delete it to re-take)"
+    elif cp "$f" "$f.cptcbak"; then
+        echo "[+] Backed up current config -> $f.cptcbak"
+    fi
     local kv
     for kv in "$@"; do
         set_ini_key "$f" "$section" "${kv%%=*}" "${kv#*=}"
@@ -115,36 +131,85 @@ hex_to_rgb() {
     printf '%d,%d,%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"
 }
 
-# --- write PALETTE out as a qterminal colour scheme ---
+# --- render PALETTE as a qterminal/qtermwidget colour scheme file ---
 # qterminal has no ini key for individual ANSI colours - it can only name a scheme
-# file, so we generate one. qtermwidget reads *.colorscheme from
-# <datadir>/qtermwidget*/color-schemes; the version suffix tracks Qt (5 vs 6), so
-# mirror whichever the box actually ships. If qtermwidget isn't installed yet we
-# write both, which costs nothing and means this works before the tools go on.
-write_qt_scheme() {
-    local dirs=() d f i
+# file, so we generate one.
+render_qt_scheme() {
+    local out=$1 i
+    {
+        printf '[General]\nDescription=%s\nOpacity=1\nWallpaper=\n\n' "$QT_SCHEME"
+        printf '[Background]\nColor=%s\n\n'        "$(hex_to_rgb "$BLACK_BG")"
+        printf '[BackgroundIntense]\nColor=%s\n\n' "$(hex_to_rgb "$BLACK_BG")"
+        printf '[Foreground]\nColor=%s\n\n'        "$(hex_to_rgb "$GREEN_FG")"
+        printf '[ForegroundIntense]\nColor=%s\n\n' "$(hex_to_rgb "$GREEN_FG")"
+        # Konsole/qtermwidget name the bright half "ColorNIntense", not Color8-15.
+        for i in 0 1 2 3 4 5 6 7; do
+            printf '[Color%d]\nColor=%s\n\n'        "$i" "$(hex_to_rgb "${PALETTE[$i]}")"
+            printf '[Color%dIntense]\nColor=%s\n\n' "$i" "$(hex_to_rgb "${PALETTE[$((i+8))]}")"
+        done
+    } > "$out"
+}
+
+# --- install the scheme where qtermwidget will actually find it ---
+#
+# VERIFIED ON KALI 2026.2 (qterminal/qtermwidget 2.4.0, Qt6): qtermwidget searches
+# ONLY the system dir - the hardcoded "/usr/share/qtermwidget6/color-schemes" is the
+# sole colour-scheme path in libqtermwidget6.so. It does NOT read
+# ~/.local/share/qtermwidget6/color-schemes.
+#
+# This matters more than it sounds: if colorScheme names a scheme qtermwidget cannot
+# resolve, it does not keep the previous look - it falls back to its built-in default,
+# which is a WHITE background with the stock ANSI palette. So an uninstallable scheme
+# leaves the box worse off than never running this script. Hence: install to the
+# system dir (needs root), and if that fails, do NOT point colorScheme at CPTC - fall
+# back to a built-in dark scheme so the background at least stays black.
+#
+# Returns 0 if "$QT_SCHEME" is now resolvable by qtermwidget, 1 otherwise.
+install_qt_scheme() {
+    local tmp sysdirs=() d base installed=0
+    tmp=$(mktemp) || return 1
+    render_qt_scheme "$tmp"
+
     for d in /usr/share/qtermwidget*/color-schemes; do
-        [ -d "$d" ] && dirs+=("$HOME/.local/share/$(basename "${d%/color-schemes}")/color-schemes")
+        [ -d "$d" ] && sysdirs+=("$d")
     done
-    [ ${#dirs[@]} -eq 0 ] && dirs=("$HOME/.local/share/qtermwidget5/color-schemes" \
-                                   "$HOME/.local/share/qtermwidget6/color-schemes")
-    for d in "${dirs[@]}"; do
-        mkdir -p "$d"
-        f="$d/$QT_SCHEME.colorscheme"
-        {
-            printf '[General]\nDescription=%s\nOpacity=1\nWallpaper=\n\n' "$QT_SCHEME"
-            printf '[Background]\nColor=%s\n\n'        "$(hex_to_rgb "$BLACK_BG")"
-            printf '[BackgroundIntense]\nColor=%s\n\n' "$(hex_to_rgb "$BLACK_BG")"
-            printf '[Foreground]\nColor=%s\n\n'        "$(hex_to_rgb "$GREEN_FG")"
-            printf '[ForegroundIntense]\nColor=%s\n\n' "$(hex_to_rgb "$GREEN_FG")"
-            # Konsole/qtermwidget name the bright half "ColorNIntense", not Color8-15.
-            for i in 0 1 2 3 4 5 6 7; do
-                printf '[Color%d]\nColor=%s\n\n'        "$i" "$(hex_to_rgb "${PALETTE[$i]}")"
-                printf '[Color%dIntense]\nColor=%s\n\n' "$i" "$(hex_to_rgb "${PALETTE[$((i+8))]}")"
-            done
-        } > "$f"
-        echo "[+] Wrote colour scheme -> $f"
+
+    if [ ${#sysdirs[@]} -eq 0 ]; then
+        echo "[!] qtermwidget is not installed yet - no colour-scheme dir to install into."
+        echo "    Re-run this script after all.sh has put the tools on."
+        rm -f "$tmp"
+        return 1
+    fi
+
+    for d in "${sysdirs[@]}"; do
+        if sudo install -m 0644 "$tmp" "$d/$QT_SCHEME.colorscheme" 2>/dev/null; then
+            echo "[+] Installed colour scheme -> $d/$QT_SCHEME.colorscheme"
+            installed=1
+        else
+            echo "[!] Could not install into $d (needs root)."
+        fi
+        # Mirror into the per-user dir from the same source. qtermwidget 2.4.0 does
+        # NOT read this - it is not load-bearing - but it costs nothing and is the
+        # correct location if a later version ever honours XDG_DATA_HOME.
+        base="$HOME/.local/share/$(basename "${d%/color-schemes}")/color-schemes"
+        mkdir -p "$base" && install -m 0644 "$tmp" "$base/$QT_SCHEME.colorscheme" 2>/dev/null
     done
+
+    rm -f "$tmp"
+    [ "$installed" -eq 1 ]
+}
+
+# --- pick a built-in dark scheme to fall back to if we cannot install ours ---
+# Ordered best-first; all four ship with qtermwidget. Anything is better than the
+# white default, so we take the first one that actually exists on this box.
+pick_fallback_scheme() {
+    local cand d
+    for cand in GreenOnBlack WhiteOnBlack Kali-Dark Linux; do
+        for d in /usr/share/qtermwidget*/color-schemes; do
+            [ -f "$d/$cand.colorscheme" ] && { printf '%s' "$cand"; return 0; }
+        done
+    done
+    return 1
 }
 
 # --- qterminal ([General] section, its own key names / value encodings) ---
@@ -152,10 +217,25 @@ write_qt_scheme() {
 # not set / not root).
 sudo chattr -i "$QT_INI" 2>/dev/null
 
-write_qt_scheme
+# Only name CPTC in the ini if it is actually installed - see install_qt_scheme.
+if install_qt_scheme; then
+    QT_SCHEME_EFFECTIVE=$QT_SCHEME
+else
+    QT_SCHEME_EFFECTIVE=$(pick_fallback_scheme)
+    if [ -n "$QT_SCHEME_EFFECTIVE" ]; then
+        echo "[!] Could not install the CPTC scheme, so NOT selecting it: an unresolvable"
+        echo "    scheme makes qterminal fall back to a WHITE background."
+        echo "    Falling back to the built-in '$QT_SCHEME_EFFECTIVE' - black background,"
+        echo "    but the stock ANSI palette, so colours will NOT match other operators."
+        echo "    Re-run this with root available to get the real uniform."
+    else
+        echo "[!] Could not install the CPTC scheme and found no built-in dark scheme."
+        echo "    Leaving colorScheme untouched rather than risking a white background."
+    fi
+fi
 
 apply_uniform "$QT_INI" General \
-    "colorScheme=$QT_SCHEME" \
+    ${QT_SCHEME_EFFECTIVE:+"colorScheme=$QT_SCHEME_EFFECTIVE"} \
     "TerminalTransparency=0" \
     "TerminalBackgroundMode=0" \
     "fontFamily=FiraCode" \
@@ -183,6 +263,29 @@ apply_uniform "$XT_INI" Configuration \
     "ColorBackground=$BLACK_BG" \
     "ColorPalette=$XT_PALETTE" \
     "BackgroundMode=TERMINAL_BACKGROUND_SOLID"
+
+# --- verify: prove the scheme qterminal will load actually resolves ---
+# The failure this catches is silent and total (white background, stock palette), so
+# it is worth the six lines. A named-but-missing scheme is the one outcome we cannot
+# allow to pass unnoticed.
+echo
+selected=$(grep -m1 '^colorScheme=' "$QT_INI" 2>/dev/null | cut -d= -f2-)
+if [ -z "$selected" ]; then
+    echo "[!] VERIFY: no colorScheme set in $QT_INI - qterminal will use its default."
+else
+    found=""
+    for d in /usr/share/qtermwidget*/color-schemes; do
+        [ -f "$d/$selected.colorscheme" ] && found=$d/$selected.colorscheme && break
+    done
+    if [ -n "$found" ]; then
+        echo "[+] VERIFY: colorScheme=$selected resolves -> $found"
+        [ "$selected" = "$QT_SCHEME" ] \
+            || echo "[!] NOTE: this is the FALLBACK scheme, not the CPTC uniform - colours will not match."
+    else
+        echo "[!] VERIFY FAILED: colorScheme=$selected is set but no such .colorscheme exists."
+        echo "    qterminal will fall back to a WHITE background. Fix before screenshotting."
+    fi
+fi
 
 # --- warn about any terminal that's open right now ---
 running=()
