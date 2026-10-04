@@ -42,7 +42,9 @@ namespace jVision.Server.Download
         // rather than stretching into a one-column-wide strip. Increase them
         // again if you need bigger badges/icons for a poster print.
         private const int NodeW = 128;
-        private const int NodeH = 84;
+        // 100 (not 84) to leave room for a second label line under the IP for
+        // the Box.Domain FQDN — same two-line layout the topology renderer uses.
+        private const int NodeH = 100;
         private const int HStep = 150;   // horizontal spacing between hop levels
         private const int VStep = 24;    // vertical spacing between sibling branches
         private const int PadX = 40;
@@ -173,6 +175,7 @@ namespace jVision.Server.Download
         {
             public string Ip;
             public string Label;         // display text (IP or "Attacker")
+            public string Domain;        // FQDN shown as a second line under the IP
             public bool IsAttacker;
             public bool IsWindows;
             public bool IsCloud;         // hosted-cloud endpoint (S3 / AWS / etc.)
@@ -214,6 +217,7 @@ namespace jVision.Server.Download
                 {
                     Ip = ip,
                     Label = ip,
+                    Domain = b?.Domain,
                     IsWindows = b != null && IsWindowsBox(b),
                     IsCloud = b != null && IsCloudBox(b),
                 };
@@ -412,11 +416,19 @@ namespace jVision.Server.Download
             else
                 sb.Append(TuxIcon(iconX, iconY));
 
-            // Label under the icon
-            int labelY = n.Y + NodeH - 10;
+            // IP (or "ATTACKER") on the first line, Box.Domain FQDN on the
+            // second — mirrors the two-line label the topology renderer draws.
+            int labelY = n.Y + NodeH - 24;
             string label = n.IsAttacker ? "ATTACKER" : (n.Label ?? "");
             sb.Append(FormattableString.Invariant(
                 $"<text x=\"{n.X + NodeW / 2}\" y=\"{labelY}\" text-anchor=\"middle\" font-size=\"12\" font-weight=\"700\" fill=\"#111\">{XmlEscape(label)}</text>\n"));
+
+            var domain = (n.Domain ?? "").Trim();
+            if (!n.IsAttacker && domain.Length > 0)
+            {
+                sb.Append(FormattableString.Invariant(
+                    $"<text x=\"{n.X + NodeW / 2}\" y=\"{labelY + 14}\" text-anchor=\"middle\" font-size=\"10\" fill=\"#111\">{XmlEscape(domain)}</text>\n"));
+            }
         }
 
         private static void DrawEdges(StringBuilder sb, TreeNode node)

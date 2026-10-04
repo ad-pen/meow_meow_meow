@@ -769,10 +769,75 @@ namespace jVision.Server.Download
 
         // ==================== draw.io export ====================
         //
-        // draw.io doesn't have a good match for our custom hand-drawn icons, so
-        // we settle for the same *layout* using built-in mxgraph stencils:
-        // attacker card at top, cisco router below, outer swimlane containing
-        // per-subnet swimlanes with device icons.
+        // Same visual language as the PNG/SVG: every icon is embedded as a
+        // URL-encoded SVG data-URL on a `shape=image` mxCell. drawio treats
+        // these as fully editable vertex cells (move, resize, relabel, swap
+        // image) so the exported .drawio looks like the PNG but is editable.
+        //
+        // URL-encoding (not base64) is used so no `;` ever appears inside the
+        // style value — drawio splits styles on `;`, which would truncate a
+        // raw `data:image/png;base64,...` URL.
+
+        private static string SvgDataUrl(string rawSvg) =>
+            "data:image/svg+xml," + Uri.EscapeDataString(rawSvg);
+
+        // Standalone hooded-attacker-at-a-monitor icon. Hood path goes above
+        // y=0 so the viewBox has a negative y origin.
+        private static string DrawioAttackerIconDataUrl() => SvgDataUrl(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 -4 100 104'>" +
+            "<rect x='0' y='20' width='100' height='70' rx='4' fill='#e6f2fb' stroke='#111' stroke-width='1.2'/>" +
+            "<rect x='5' y='25' width='90' height='55' fill='#ffffff' stroke='#111' stroke-width='0.6'/>" +
+            "<path d='M 34 12 Q 34 -2 50 -2 Q 66 -2 66 12 L 66 30 L 34 30 Z' fill='#111' stroke='#111'/>" +
+            "<rect x='42' y='16' width='16' height='6' fill='#e6f2fb'/>" +
+            "<path d='M 30 30 Q 30 44 40 48 L 60 48 Q 70 44 70 30 Z' fill='#111'/>" +
+            "<rect x='45' y='90' width='10' height='6' fill='#111'/>" +
+            "<rect x='30' y='96' width='40' height='4' rx='1' fill='#111'/>" +
+            "</svg>");
+
+        private static string DrawioRouterIconDataUrl() => SvgDataUrl(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 58'>" +
+            "<rect x='0' y='16' width='100' height='28' fill='#2ea3c9'/>" +
+            "<ellipse cx='50' cy='44' rx='50' ry='12' fill='#1f80a3'/>" +
+            "<ellipse cx='50' cy='16' rx='50' ry='12' fill='#2ea3c9'/>" +
+            "<ellipse cx='50' cy='16' rx='50' ry='12' fill='none' stroke='#9be3f5' stroke-width='1' opacity='0.8'/>" +
+            "</svg>");
+
+        private static string DrawioWindowsIconDataUrl() => SvgDataUrl(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 52 45'>" +
+            "<path d='M 6 8 L 25 5 L 25 22 L 6 24 Z' fill='#f25022'/>" +
+            "<path d='M 27 5 L 47 3 L 47 22 L 27 22 Z' fill='#7fba00'/>" +
+            "<path d='M 6 26 L 25 24 L 25 41 L 6 43 Z' fill='#00a4ef'/>" +
+            "<path d='M 27 24 L 47 22 L 47 41 L 27 41 Z' fill='#ffb900'/>" +
+            "</svg>");
+
+        private static string DrawioCloudIconDataUrl() => SvgDataUrl(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='-4 0 56 45'>" +
+            "<path d='M 8 34 Q -2 34 -2 26 Q -2 18 8 18 Q 8 6 22 6 Q 36 6 38 18 Q 50 18 50 26 Q 50 34 40 34 Z' fill='#bae6fd' stroke='#0369a1' stroke-width='1.8' stroke-linejoin='round'/>" +
+            "<ellipse cx='14' cy='22' rx='5' ry='3' fill='#e0f2fe'/>" +
+            "</svg>");
+
+        private static string DrawioMobileIconDataUrl() => SvgDataUrl(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 52 45'>" +
+            "<rect x='17' y='1' width='18' height='43' rx='3' ry='3' fill='#1f2937' stroke='#111827' stroke-width='1'/>" +
+            "<rect x='19' y='6' width='14' height='32' rx='1' ry='1' fill='#60a5fa'/>" +
+            "<rect x='24' y='3.5' width='4' height='1.2' rx='0.6' ry='0.6' fill='#9ca3af'/>" +
+            "<rect x='23' y='40.5' width='6' height='1.6' rx='0.8' ry='0.8' fill='#9ca3af'/>" +
+            "</svg>");
+
+        // Tux is a PNG (TuxAsset.DataUrl). Wrap it in an SVG `<image>` so the
+        // outer URL has no `;` after URL-encoding, matching the other icons.
+        private static string DrawioLinuxIconDataUrl() => SvgDataUrl(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 52 45'>" +
+            $"<image x='0' y='0' width='52' height='45' preserveAspectRatio='xMidYMid meet' href='{TuxAsset.DataUrl}'/>" +
+            "</svg>");
+
+        private static string DrawioHostIconUrl(Box b)
+        {
+            if (IsCloud(b)) return DrawioCloudIconDataUrl();
+            if (IsMobile(b)) return DrawioMobileIconDataUrl();
+            if (IsWindows(b)) return DrawioWindowsIconDataUrl();
+            return DrawioLinuxIconDataUrl();
+        }
 
         public static byte[] RenderDrawio(List<Box> boxes)
         {
@@ -805,14 +870,22 @@ namespace jVision.Server.Download
                 DrawioCell(w, "0", null, null, null);
                 DrawioCell(w, "1", "0", null, null);
 
-                // Attacker box (dashed swimlane)
+                // Attacker box (dashed swimlane) + hooded-figure monitor icon
+                // child so the drawio file carries the same artwork as the PNG.
                 DrawioVertex(w, "attacker", "1", "Attacker Network",
                     "swimlane;html=1;fontStyle=1;startSize=26;fillColor=none;strokeColor=#333333;strokeWidth=1.4;dashed=1;dashPattern=4 3;fontColor=#111111;fontSize=13;",
                     layout.AttackerX, AttackerTopY, AttackerW, AttackerH);
+                // Icon is drawn with coordinates relative to its parent cell
+                // (the swimlane); the 26 px startSize is included so the icon
+                // sits below the title bar.
+                DrawioVertex(w, "attacker_icon", "attacker", "",
+                    "shape=image;html=1;image=" + DrawioAttackerIconDataUrl() + ";imageAspect=0;",
+                    (AttackerW - 100) / 2, 38 + 26 - 26, 100, 100);
 
-                // Router (cyan)
+                // Router — Cisco cylinder, redrawn as our hand-styled icon so
+                // it matches the PNG rather than the generic drawio stencil.
                 DrawioVertex(w, "router", "1", "ROUTER",
-                    "shape=mxgraph.cisco.routers.router;html=1;fillColor=#2ea3c9;strokeColor=#1f80a3;fontColor=#111111;fontStyle=1;labelPosition=right;verticalLabelPosition=middle;align=left;verticalAlign=middle;",
+                    "shape=image;html=1;image=" + DrawioRouterIconDataUrl() + ";imageAspect=0;fontColor=#111111;fontStyle=1;labelPosition=right;verticalLabelPosition=middle;align=left;verticalAlign=middle;",
                     layout.RouterX, RouterTopY, RouterW, RouterH);
 
                 // Edges attacker -> router -> engagement frame
@@ -846,11 +919,14 @@ namespace jVision.Server.Download
                         int col = hIdx % DevPerRow;
                         int hx = gridX + col * cellSpanW + (cellSpanW - IconW) / 2;
                         int hy = gridY + row * CellH;
+                        // Match the SVG's two-line label: IP on top, Hostname
+                        // (or Domain if hostname is blank) underneath.
                         string hostname = string.IsNullOrEmpty(host.Hostname) ? "" : host.Hostname;
-                        string label = (host.Ip ?? "") + (string.IsNullOrEmpty(hostname) ? "" : "<br>" + hostname);
-                        string style = IsWindows(host)
-                            ? "shape=mxgraph.mscae/computer;html=1;fillColor=#2261c4;strokeColor=#1e3a8a;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#111111;"
-                            : "shape=mxgraph.networks/pc;html=1;fillColor=#2261c4;strokeColor=#1e3a8a;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#111111;";
+                        string second = !string.IsNullOrEmpty(hostname) ? hostname
+                                       : (!string.IsNullOrEmpty(host.Domain) ? host.Domain : "");
+                        string label = (host.Ip ?? "") + (string.IsNullOrEmpty(second) ? "" : "<br>" + second);
+                        string style = "shape=image;html=1;image=" + DrawioHostIconUrl(host) +
+                                       ";imageAspect=0;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#111111;";
                         DrawioVertex(w, $"h_{i}_{hIdx}", subId, label, style, hx, hy, IconW, IconH);
                     }
                 }
