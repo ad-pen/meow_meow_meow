@@ -574,6 +574,178 @@ DESKTOP
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# VERIFICATION HELPERS
+# ---------------------------------------------------------------------------
+# These used to exist TWICE - once in all.sh and once in ad.sh, as near-identical
+# ~80-line blocks with different counter names (PASS/FAIL vs AD_PASS/AD_FAIL). The
+# duplication is gone because the two scripts are now one, and the helpers live
+# here because this is where shared code belongs.
+#
+# THE CONTRACT: RUN the tool, do not just locate it. 'command -v' passes for a
+# file that cannot execute - wrong arch, missing shared library, half-configured
+# package, truncated download - which is exactly the failure a rebuilt box hits.
+#
+# COUNTERS use VAR=$((VAR+1)), never ((VAR++)). Post-increment returns the OLD
+# value, so at 0 the arithmetic result is 0 and bash reads that as exit status 1;
+# any 'cmd && ok && ((PASS++)) || fail' chain then runs BOTH branches. That bug
+# was live once and printed "X verified" and "X NOT working" for the same tool.
+PASS=0
+WARN=0
+FAIL=0
+
+# _run_check <desc> <command> [pattern]
+#   no pattern -> the command must exit 0.
+#   pattern    -> exit status is IGNORED and the OUTPUT must match /pattern/i.
+#                 Needed because many tools print their banner then exit non-zero
+#                 (hydra -h, proxychains4 -h, responder -h).
+# Wrapped in 'timeout' so one hanging tool cannot stall the whole run.
+_run_check() {
+    local desc=$1 cmd=$2 pat=${3:-} out rc
+    out=$(timeout 180 bash -c "$cmd" 2>&1); rc=$?
+    if [ "$rc" -eq 124 ]; then
+        print_warning "$desc TIMED OUT during verification"
+        WARN=$((WARN+1)); return 0
+    fi
+    if [ -n "$pat" ]; then
+        if printf '%s' "$out" | grep -qaiE "$pat"; then
+            print_success "$desc verified"; PASS=$((PASS+1))
+        else
+            print_warning "$desc ran but its output did not match /$pat/ - suspect"
+            WARN=$((WARN+1))
+        fi
+        return 0
+    fi
+    if [ "$rc" -eq 0 ]; then
+        print_success "$desc verified"; PASS=$((PASS+1))
+    else
+        print_warning "$desc is installed but FAILED to run (exit $rc)"
+        WARN=$((WARN+1))
+    fi
+    return 0
+}
+
+# check_tool <name> [command] [pattern] - PATH lookup first, then run it.
+check_tool() {
+    local tool=$1
+    if ! command -v "$tool" &>/dev/null; then
+        print_error "$tool NOT installed"
+        FAIL=$((FAIL+1)); return 0
+    fi
+    _run_check "$tool" "${2:-$tool --version}" "${3:-}"
+}
+
+# check_cmd <desc> <command> [pattern] - for things not on PATH (repo checkouts
+# invoked through their interpreter).
+check_cmd() { _run_check "$1" "$2" "${3:-}"; }
+
+# check_file - existence only. Correct for DIRECTORIES; do not use it for files
+# we downloaded (see check_payload).
+check_file() {
+    local file=$1 desc=$2
+    if [ -e "$file" ]; then
+        print_success "$desc verified"; PASS=$((PASS+1))
+    else
+        print_error "$desc NOT found"; FAIL=$((FAIL+1))
+    fi
+}
+
+# check_payload <path> <desc> <pattern> [min-bytes] - for DOWNLOADED files.
+# 'curl -f' catches a 404, but a proxy or captive-portal interception page answers
+# 200 and lands on disk as a perfectly successful download. So: check the size,
+# then sniff the first 2 KB for what the file should actually contain. This is the
+# check that catches "linpeas.sh is 1.4 KB of HTML".
+check_payload() {
+    local f=$1 desc=$2 pat=$3 minb=${4:-1024} sz
+    if [ ! -f "$f" ]; then
+        print_error "$desc NOT found"; FAIL=$((FAIL+1)); return 0
+    fi
+    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    if [ "$sz" -lt "$minb" ]; then
+        print_error "$desc is only ${sz} bytes (expected >= ${minb}) - truncated or an error page"
+        FAIL=$((FAIL+1)); return 0
+    fi
+    if head -c 2048 "$f" | grep -qaiE "$pat"; then
+        print_success "$desc verified (${sz} bytes)"; PASS=$((PASS+1))
+    else
+        print_error "$desc is the wrong KIND of file - first bytes do not match /$pat/ (HTML error page?)"
+        FAIL=$((FAIL+1))
+    fi
+    return 0
+}
+
+# check_script <path> <desc> - a downloaded shell script that PARSES is a far
+# stronger signal than one that merely exists.
+check_script() {
+    local f=$1 desc=$2
+    if [ ! -f "$f" ]; then
+        print_error "$desc NOT found"; FAIL=$((FAIL+1)); return 0
+    fi
+    if bash -n "$f" 2>/dev/null; then
+        print_success "$desc verified (parses as shell)"; PASS=$((PASS+1))
+    else
+        print_error "$desc exists but is NOT valid shell - bad download"; FAIL=$((FAIL+1))
+    fi
+    return 0
+}
+
+# check_repo <dir> <desc> - a clone that exists but is EMPTY (interrupted clone)
+# used to pass a plain existence check.
+check_repo() {
+    local dir=$1 desc=$2 n
+    if [ ! -d "$dir" ]; then
+        print_error "$desc NOT found"; FAIL=$((FAIL+1)); return 0
+    fi
+    n=$(find "$dir" -type f 2>/dev/null | wc -l)
+    if [ "$n" -lt 2 ]; then
+        print_error "$desc is present but nearly empty ($n files) - interrupted clone"
+        FAIL=$((FAIL+1))
+    else
+        print_success "$desc verified ($n files)"; PASS=$((PASS+1))
+    fi
+    return 0
+}
+
+# check_pe <file> <desc> - a Windows payload must be a real PE. Everything in the
+# payload set arrives over HTTP, so the failure that matters is a captive portal
+# returning an HTML page with a 200 status. A PE starts "MZ".
+check_pe() {
+    local f=$1 desc=$2
+    if [ ! -s "$f" ]; then
+        print_error "$desc NOT found"; FAIL=$((FAIL+1)); return 0
+    fi
+    if head -c 2 "$f" | grep -qa "^MZ"; then
+        print_success "$desc verified (valid PE)"; PASS=$((PASS+1))
+    else
+        print_error "$desc is NOT a PE - captive portal or failed download?"
+        FAIL=$((FAIL+1))
+    fi
+    return 0
+}
+
+# check_ps1 <file> <desc> - reject HTML masquerading as a PowerShell script.
+check_ps1() {
+    local f=$1 desc=$2
+    if [ ! -s "$f" ]; then
+        print_error "$desc NOT found"; FAIL=$((FAIL+1)); return 0
+    fi
+    if head -c 512 "$f" | grep -qaiE '<!doctype|<html'; then
+        print_error "$desc is HTML, not PowerShell - captive portal?"; FAIL=$((FAIL+1))
+    else
+        print_success "$desc verified"; PASS=$((PASS+1))
+    fi
+    return 0
+}
+
+# $1 = python module name, $2 = human label
+check_pymod() {
+    if python3 -c "import $1" &>/dev/null; then
+        print_success "$2 verified"; PASS=$((PASS+1))
+    else
+        print_error "$2 NOT working"; FAIL=$((FAIL+1))
+    fi
+}
+
 # Print the pin/verification summary. Callers run this next to the APT summary.
 pin_summary() {
     echo

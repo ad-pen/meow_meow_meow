@@ -15,12 +15,13 @@ see its header. Before the event, build against `REHEARSAL.md`.
 |---|---|
 | `README.md` | entry point: quick start, script order, log paths, contributor conventions |
 | `start.sh` | bootstrap: base packages, docker, desktop, command logging + terminal uniform |
-| `all.sh` | full tool suite (~30 min) + **Burp and its logging extension**; preflight reports, never blocks |
+| `all.sh` | **the whole build** (~35 min): web, cloud, OT, reporting, Burp + its logging extension, **and AD/internal**. One apt phase, one verification pass, one summary |
+| `all.sh --ad-only` · `--no-ad` | run only / skip the AD section |
 | `all.sh --ismael` | the above **plus** the mobile kit and the nuclei-templates clone |
-| `ad.sh` | AD/internal tools, **the Windows payload set**, both BloodHound collectors |
+| `ad.sh` | **wrapper → `all.sh --ad-only`.** Kept because the name is in muscle memory and the printed checklist |
 | `windows.ps1` | the Windows box: Burp, Snaffler, BloodHound 4.3.1 + Neo4j 4.4.19 |
 | `smol-all.sh` | emergency rebuild, critical path only (~5 min) |
-| `lib.sh` | shared helpers + the artifact **pin manifest** (sourced by all.sh/ad.sh) |
+| `lib.sh` | shared helpers, the `$USER_HOME` resolver, `install_burp_latest`, the **verification helpers** and the artifact **pin manifest** |
 | `pins.sh` | record / verify the pinned sha256 values — see `REHEARSAL.md` |
 | `command_logging.sh` · `burp_logging.sh` · `burp_logger.py` · `terminal_uniform.sh` | the engagement-evidence layer |
 | `redaction_test.sh` | **proves both redactors do not leak.** Run after any change to either, and in every rehearsal |
@@ -413,8 +414,6 @@ Two notes worth keeping:
   and point-of-sale** as the attack surface, and the build has no SQLi tool at all.
 - **jVision `dotnet:5.0` base images are EOL** — pre-pull and `docker save` them during
   prep so engagement day isn't the first time a failed pull is discovered.
-- **`snmp-check` is a dead file in this repo** — 77 KB checked in, referenced by no script.
-  Wire it in or delete it.
 - 🆕 **`certighost` is an unvetted third-party exploit.** Read it before the repo freeze.
   There are four public PoCs for CVE-2026-54121; we pinned `aniqfakhrul`'s on the grounds
   that `ad.sh` already installs his `powerview.py`. If a review turns up something better,
@@ -425,16 +424,11 @@ Two notes worth keeping:
   gets the critical path only, by design — but if the box that died was the one serving
   payloads, `ad.sh` has to be re-run to get `~/dropzone/windows` back. Worth knowing
   before it happens rather than during.
-- 🆕 **`ad.sh`'s `--help` does not exist**, unlike `all.sh`'s and `smol-all.sh`'s. Minor,
-  but it now does a lot more than its name suggests.
 - 🆕 **`smol-all.sh` still downloads linpeas and chisel with no hash check.** It
   duplicates those two URLs from `lib.sh` deliberately (it must survive a partial clone),
   but now that the manifest is fully pinned it is the only unverified download path left —
   on the box most likely to be rebuilt under time pressure. Two inlined hash literals
   would close it. **Not done.**
-- 🆕 **The ~80-line verification helper block is duplicated** between `all.sh` and `ad.sh`;
-  `ad.sh`'s own comment admits it. A `lib.sh` candidate, but a refactor to do **after** the
-  freeze, not days before it.
 - ✅ **Pin hashes are DONE — 0 of 33 artifacts are unverified** (was 32 of 33), recorded
   2026-10-05. Two things to know:
   - **`pins.sh --write` had never worked.** Its sed was anchored `^PIN_SHA\[`, but almost
@@ -453,6 +447,18 @@ Two notes worth keeping:
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--ismael`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (fourth pass): `ad.sh` and `all.sh` are one script.** They were
+  always run back to back on the same box against the same `lib.sh`, and keeping them
+  apart cost a duplicated ~80-line verification helper block (now in `lib.sh`), two apt
+  lists with **five packages in both** (`enum4linux`, `docker.io`, `responder`, `netexec`,
+  `unzip`), two sudo keepalives, two dropzone creations, two APT-failure summaries and two
+  pin summaries. Now: one apt phase, one verification pass, one summary. `--ad-only` and
+  `--no-ad` gate the section, and `ad.sh` forwards to `--ad-only`.
+  **A dry run with every installer stubbed caught a real regression this introduced:**
+  several `cd ... || exit 1` lines inherited from `ad.sh` were harmless when that script
+  ended right after them, but in the merged script they sit *before* the verification pass,
+  the APT summary and the pin summary — so one interrupted clone silently took the whole
+  diagnostic half of the build with it. All converted to warn-and-skip.
 - ✅ **Closed 2026-10-05 (third pass).** The build no longer asks questions and no
   longer breaks under `sudo`: every `apt` call is `DEBIAN_FRONTEND=noninteractive`
   plus `--force-confdef --force-confold` (debconf was only half the problem — a dpkg

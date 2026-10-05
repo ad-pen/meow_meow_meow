@@ -39,11 +39,12 @@ A rehearsal only counts if the box is **clean** and **not shaped like your dev b
 | 6 | `time bash all.sh` | record wall time. It must run start-to-finish **without asking anything** — if it stops for input, that is a finding |
 | 7 | `burpsuite --version`, then start Burp, send one Repeater request, `tail ~/.burp_history_readable` | Burp installed by `all.sh`, correct JVM picked, and the extension auto-loaded. A `UnsupportedClassVersionError` here means `default-jdk` is missing |
 | 8 | Read the **verification summary** line by line. Every FAIL and WARN is a finding | this is the whole point |
-| 9 | `time bash ad.sh`, same treatment | |
+| 9 | *(gone — the AD build is part of `all.sh` now and is covered by step 6)* | |
 | 10 | `ls ~/dropzone` and confirm it is in **your** home, not `/home/kali` | the original bug |
-| 11 | Re-run `all.sh` and `ad.sh` | idempotency: second run must be fast, and every artifact already on disk must now report **"already present and matches the pinned sha256"** — not just "skip" |
+| 11 | Re-run `all.sh` | idempotency: second run must be fast, and every artifact already on disk must now report **"already present and matches the pinned sha256"** — not just "skip" |
 | 11b | `bash pins.sh --audit` | re-hashes what actually landed on this box against the manifest. No network. Must exit 0 |
-| 12 | `bash smol-all.sh` on a **second** clean snapshot | the emergency path, timed |
+| 12 | `bash smol-all.sh` on a **second** clean snapshot | the emergency path, timed. Use `--no-burp` — Burp is a 650 MB download and the point of this script is speed |
+| 13 | `bash all.sh --ad-only` on a box that already ran `all.sh` | the old `ad.sh` path still works and is fast (everything already present) |
 
 ## Pin the artifacts (do this once, on a trusted network)
 
@@ -80,7 +81,7 @@ is a build that will not reproduce.**
 Put these in `team-todo.md` after each rehearsal — they are the numbers you plan
 the engagement morning around:
 
-- wall time for `start.sh`, `all.sh`, `ad.sh`, `smol-all.sh`
+- wall time for `start.sh`, `all.sh` (now includes the AD section), `smol-all.sh`
 - the pin summary: how many artifacts were unpinned, and any sha256 mismatch
 - the PASS / WARN / FAIL counts from each verification summary
 - the exact contents of the `APT packages that FAILED to install` line

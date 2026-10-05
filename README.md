@@ -24,11 +24,16 @@ preflight reports rather than blocks, so a build can be started and left alone.
 git clone <this-repo>
 cd <this-repo>
 
-bash start.sh      # base packages, docker, desktop, the evidence layer
-# -> do the manual steps it prints, then:
-bash all.sh        # the full tool suite (~30 min)
-bash ad.sh         # AD / internal tooling
+bash start.sh      # base packages, docker, desktop, command logging, terminal
+# -> do the two manual steps it prints, then:
+bash all.sh        # EVERYTHING ELSE (~35 min): web, cloud, OT, reporting,
+                   # Burp + its logging extension, and AD/internal
 ```
+
+**There is no separate `ad.sh` step any more** — the AD/internal tooling is part of
+`all.sh`. `ad.sh` still exists as a thin wrapper (`all.sh --ad-only`) so the
+printed on-site checklist and everyone's muscle memory keep working, but a box
+built from scratch only needs the two commands above.
 
 `all.sh` re-checks the manual steps from `start.sh`, shows exactly what is missing
 and how to fix each one, then **continues**. That matters because anything you run
@@ -44,20 +49,23 @@ The jVision server can be brought up in a second terminal while `all.sh` runs �
 `start.sh` installs Docker specifically so that is possible (`all.sh` holds the apt
 lock for its whole package phase).
 
-### Roles
-
-There is exactly one role flag:
+### Flags
 
 ```bash
-bash all.sh            # full standard suite
-bash all.sh --ismael   # the above + mobile kit + nuclei-templates  (~2.3 GB extra)
+bash all.sh              # everything. This is what almost everyone runs.
+bash all.sh --ismael     # + mobile kit + nuclei-templates   (~2.3 GB extra)
+bash all.sh --ad-only    # ONLY the AD/internal section (what ad.sh used to do)
+bash all.sh --no-ad      # skip AD/internal (~650 MB: BloodHound CE, neo4j, payloads)
 bash all.sh --help
 ```
 
-Deliberately the only one: splitting further costs more in "which flag do I need
-again?" than it saves in bandwidth. ⚠️ If nobody runs `--ismael`, nobody has nuclei
-templates offline — `nuclei` downloads them on first use, which fails without
-egress.
+The default installs everything, deliberately — nobody should have to remember a
+flag on engagement morning. `--ismael` exists only because two items dominate the
+build's weight while one operator needs them; `--ad-only` and `--no-ad` exist for
+the two cases where that actually matters.
+
+⚠️ If nobody runs `--ismael`, nobody has nuclei templates offline — `nuclei`
+downloads them on first use, which fails without egress.
 
 ### Lost a box mid-engagement
 
@@ -88,10 +96,10 @@ powershell -ep bypass
 | File | Purpose |
 |---|---|
 | `start.sh` | Bootstrap: base packages, Docker, XFCE + xRDP, and the evidence layer |
-| `all.sh` | Full tool suite, gated by a preflight check; ends with a verification pass |
-| `ad.sh` | AD/internal tooling, the Windows payload set, both BloodHound collectors |
+| `all.sh` | The whole build — web, cloud, OT, reporting, Burp, **and AD/internal** — then one verification pass |
+| `ad.sh` | **Compatibility wrapper** → `all.sh --ad-only`. The AD build lives in `all.sh` now |
 | `smol-all.sh` | Emergency rebuild — critical path only |
-| `lib.sh` | Shared helpers **and the artifact pin manifest** (sourced by `all.sh`/`ad.sh`) |
+| `lib.sh` | Shared helpers, the `$USER_HOME` resolver, the Burp installer, the **verification helpers** and the **artifact pin manifest** |
 | `pins.sh` | Record / verify the pinned sha256 values |
 | `windows.ps1` | Windows box: Burp, Snaffler, BloodHound 4.3.1 + Neo4j 4.4 |
 | `command_logging.sh` | Timestamped, credential-redacted shell log (zsh + bash) |
@@ -226,7 +234,7 @@ regression. Do not install Neo4j from Chocolatey; that package tracks 5.x.
 
 ## The Windows payload set
 
-`ad.sh` builds `~/dropzone/windows/` on **Kali**. These are payloads **uploaded to
+`all.sh` builds `~/dropzone/windows/` on **Kali**. These are payloads **uploaded to
 compromised Windows targets** — they are not installed on our own Windows box. The
 directory is a flat HTTP root on purpose, so the transfer line stays short:
 
