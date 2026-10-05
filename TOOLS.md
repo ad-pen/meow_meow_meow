@@ -407,6 +407,32 @@ Two notes worth keeping:
 **32 pin-manifest artifacts** (all hash-verified; `powerup` removed) · **21 `fetch_pinned` + 12 `clone_pinned` in `ad.sh`** ·
 3 pinned artifacts in `windows.ps1` + 6 choco packages.
 
+## Expected noise in the build log — not defects
+
+**376 `SyntaxWarning` lines are normal.** They alarm people on first read (they did once
+already), so: every one comes from `/usr/lib/python3/dist-packages/`, emitted while apt
+**byte-compiles third-party Python** during install. **316 of the 376 are `azure-cli`'s
+vendored Azure SDK** (`azure/synapse/artifacts/models`); the rest are commix,
+fern-wifi-cracker, dirsearch, wfuzz, sshtunnel and humanfriendly. Two shapes, both legal
+in Python 3.14 and warning about future versions: invalid escape sequences (`"\S"`,
+`"\ "`, `"\)"`) and `return`/`break` inside a `finally` block.
+
+Measured on run 5 (2026-10-05, 8216-line log):
+
+| | count |
+|---|---|
+| `syntax error` | **0** |
+| `SyntaxError` / `IndentationError` / `TabError` | **0** |
+| `unbound variable`, `command not found`, bash `: line N:` | **0** |
+| `SyntaxWarning` | 376 — all third-party, none naming a file of ours |
+
+Our own code is clean: `burp_logger.py` and `jvis_logsync.py` compile with **0**
+SyntaxWarnings, and all 11 shell scripts pass `bash -n`.
+
+⚠️ **Do not silence these with `PYTHONWARNINGS=ignore::SyntaxWarning`.** It would work, and
+it would equally silence a real warning from `burp_logger.py` or `jvis_logsync.py` — the two
+files that carry the engagement-evidence layer, where noise beats silence.
+
 ## Gaps and open items
 
 - **`sqlmap` and `SSTImap` are still deliberately absent.** Do not re-add without asking.
