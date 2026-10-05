@@ -238,6 +238,7 @@ reversible and what to quote on the Artifact & Configuration Changes sheet.
 |---|---|---|
 | `awscli` | A | |
 | `pacu` | A | pip |
+| `principalmapper` (`pmapper`) | A | pip — **IAM privesc paths.** Kept when ScoutSuite was cut: it is a fraction of the cost and graphs which IAM principal can reach which, which `pacu` does not do |
 | `azure-cli` (`az`) | A | **in Kali's own repo** (2.90.0-1) — no Microsoft apt repo, no GPG dance. ~175 MB with deps |
 | `AzureHound` | A | pinned release zip → `/usr/local/bin/azurehound`. Feeds the **same** BloodHound CE instance `ad.sh` installs, so Azure and on-prem paths land in one graph |
 | `ROADtools` (`roadrecon`) | A | pip — Entra ID recon |
@@ -246,7 +247,7 @@ Everything above the `azure-cli` line is AWS-only, which was the hole: CPTC's ow
 infrastructure is an Entra/M365 tenant, deliverables live in M365, and the CPTC 12
 client was identified *through* its Azure tenant.
 
-> 🔻 **`ScoutSuite` and `principalmapper` were REMOVED 2026-10-05, on measured cost.**
+> 🔻 **`ScoutSuite` was REMOVED 2026-10-05 on measured cost. `principalmapper` was kept.**
 > Timed on run 5, the cloud pip block alone took **7m 40s — 1,117 package downloads and
 > 1.7 GB of site-packages** — and ScoutSuite was nearly all of it, because it is a *multi*-cloud
 > auditor and pip installs every provider SDK whether or not we point it at one.
@@ -257,8 +258,9 @@ client was identified *through* its Azure tenant.
 > an engagement against a theme park.
 > What remains still covers the cloud we actually expect — `awscli` + `pacu` for AWS,
 > `azure-cli` + `roadtools` + `azurehound` for Entra/Azure, which is the likelier target.
-> If a cloud assessment genuinely needs them on the day they are one command away:
-> `pip install scoutsuite principalmapper --break-system-packages`.
+> `principalmapper` stays: a fraction of the cost, and the only thing in the build that
+> graphs AWS IAM privesc *paths* rather than just enumerating. If an assessment genuinely
+> needs ScoutSuite on the day: `pip install scoutsuite --break-system-packages`.
 
 ## Mobile — `--mobile` only
 
@@ -415,7 +417,7 @@ Two notes worth keeping:
 
 65 apt in `all.sh` main list + 8 reporting + `azure-cli` + Sublime · 4 more under `--mobile` ·
 **20** apt in `ad.sh` (+2 mono) · 14 apt in `start.sh` ·
-6 pip (A) + 1 pip (I) + 4 pip (D) · 4 Go ·
+7 pip (A) + 1 pip (I) + 4 pip (D) · 4 Go ·
 **32 pin-manifest artifacts** (all hash-verified; `powerup` removed) · **21 `fetch_pinned` + 12 `clone_pinned` in `ad.sh`** ·
 3 pinned artifacts in `windows.ps1` + 6 choco packages.
 
