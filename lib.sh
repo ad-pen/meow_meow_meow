@@ -134,7 +134,7 @@ apt_install() {
             if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
                    -o Dpkg::Options::=--force-confdef \
                    -o Dpkg::Options::=--force-confold \
-                   -o DPkg::Lock::Timeout=600 \
+                   -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \
                    $APT_IPV4 --only-upgrade "$pkg"; then
                 print_success "$pkg present (upgraded if newer was available)"
             else
@@ -143,7 +143,7 @@ apt_install() {
         elif sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
                  -o Dpkg::Options::=--force-confdef \
                  -o Dpkg::Options::=--force-confold \
-                 -o DPkg::Lock::Timeout=600 $APT_IPV4 "$pkg"; then
+                 -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 $APT_IPV4 "$pkg"; then
             # 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
             # DEBIAN_FRONTEND, so without this, debconf prompts (docker.io's
             # "Remove all Docker data?", neo4j's preconfigure) appear and fail the
@@ -154,6 +154,17 @@ apt_install() {
             # --force-confold answers "keep what is there" without asking, which
             # is the right answer on a box we are building, and means an install
             # can never block waiting for someone who is not watching.
+            #
+            # Acquire::Retries=3 is here for the same reason: measured failure, not
+            # theory. Run 3 lost libreoffice-writer outright to one unreachable
+            # mirror -
+            #   E: Failed to fetch http://mirrors.netix.net/kali/pool/.../liborcus...
+            #      Unable to connect to mirrors.netix.net:http: [IP: 87.121.121.4 80]
+            # - and the verification then correctly reported "soffice NOT
+            # installed", so the report-to-PDF path was silently gone. apt does not
+            # retry a failed fetch by default; the same install succeeded by hand
+            # minutes later. Kali's mirror pool is community-run and individual
+            # mirrors flake regularly.
             #
             # DPkg::Lock::Timeout=600 is NOT cosmetic - it is here because of a
             # measured failure. On the clean-VM run the first FIVE packages of
@@ -539,6 +550,11 @@ go_install() {
         return 0
     fi
     if go install "${mod}@${ver}" 2>/dev/null; then
+        # go honours the ambient umask, so at umask 0007 these came out
+        # -rwxrwx--- inside a drwxrwx--- directory. It works for the owner, but
+        # the mode of the build should not depend on who launched it, and a
+        # non-traversable ~/go/bin breaks anything run as another account.
+        chmod 0755 "${GOPATH:-$HOME/go}/bin" "${GOPATH:-$HOME/go}/bin/$bin" 2>/dev/null
         print_success "$bin installed (@$ver)"
         [ "$ver" = "latest" ] && UNPINNED+=("$bin")
         out=$("$bin" -version 2>&1 | head -n1 || echo "-")

@@ -73,7 +73,7 @@ else
 fi
 APT_NI=(sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
-        -o DPkg::Lock::Timeout=600 $APT_IPV4)
+        -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 $APT_IPV4)
 
 
 LOG_FILE="$USER_HOME/start_install.log"
@@ -136,7 +136,7 @@ while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 # removes it, but start.sh runs FIRST and installs the desktop, so it has to go
 # here or the very first big install is the one that blocks.
 print_status "Removing needrestart to avoid interactive prompts..."
-sudo env DEBIAN_FRONTEND=noninteractive apt-get remove -y -o DPkg::Lock::Timeout=600 needrestart 2>/dev/null \
+sudo env DEBIAN_FRONTEND=noninteractive apt-get remove -y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 needrestart 2>/dev/null \
     || print_warning "needrestart not installed (ok)"
 
 # Removing it once is not enough. needrestart is a RECOMMENDS of several packages
@@ -160,7 +160,7 @@ PIN
 print_status "Removing Kali's packaged Burp (we install PortSwigger's current jar)..."
 if dpkg -s burpsuite &>/dev/null; then
     sudo env DEBIAN_FRONTEND=noninteractive apt-get purge -y \
-        -o DPkg::Lock::Timeout=600 burpsuite \
+        -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 burpsuite \
         && print_success "Kali's burpsuite package removed" \
         || print_warning "Could not purge Kali's burpsuite (non-critical)"
 else
@@ -168,7 +168,7 @@ else
 fi
 
 print_status "Updating package lists..."
-if sudo apt-get update -o DPkg::Lock::Timeout=600; then
+if sudo apt-get update -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3; then
     print_success "Package lists updated"
 else
     print_error "Failed to update package lists"

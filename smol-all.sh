@@ -120,20 +120,20 @@ if [ ${#TODO[@]} -eq 0 ]; then
     print_success "Every critical package is already installed - nothing to do."
 else
     print_status "Updating package lists..."
-    sudo apt-get update -qq -o DPkg::Lock::Timeout=600 || print_warning "apt update had problems - continuing anyway"
+    sudo apt-get update -qq -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 || print_warning "apt update had problems - continuing anyway"
 
     print_status "Installing ${#TODO[@]} package(s): ${TODO[*]}"
     # ONE transaction first: it is dramatically faster than all.sh's one-at-a-time
     # loop. Only if that transaction fails do we fall back to per-package installs,
     # so we get all.sh's failure isolation without paying for it up front.
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 \
+    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \
            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "${TODO[@]}"; then
         print_success "All packages installed in one pass"
     else
         print_warning "Batch install failed - retrying one at a time to isolate the bad package"
         FAILED=()
         for p in "${TODO[@]}"; do
-            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 \
+            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \
                    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$p"; then
                 print_success "$p installed"
             else

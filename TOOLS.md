@@ -447,6 +447,48 @@ Two notes worth keeping:
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--mobile`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (ninth pass): run 3 on the clean snapshot — 112 passed, 2 warnings,
+  1 failed**, and the warnings were worth having. `start.sh` 3m06s, `all.sh` 31m45s, both
+  exit 0, at umask 0007.
+  **Proven working at last:** `[+] Burp jar verified (684704951 bytes)` — the sixth pass's
+  `stat -Lc` fix, blocked in run 1 by the permission bug and in run 2 by my own deleted
+  symlink. Also `[+] Burp version record (2026.3.3) verified`,
+  `[+] Kali's burpsuite package removed`, `[+] pwntools verified`,
+  `[+] icspacket built from source (v0.3.1)` + verified,
+  `[+] kerbrute`/`windapsearch verified against pinned sha256`, `[+] gobuster verified`,
+  `[+] PATH for go/pipx added to .zshrc`/`.bashrc`, and `--only-upgrade` visibly working
+  (`gobuster present (upgraded if newer was available)`).
+  Three new findings, all from the new named-warnings output:
+  1. 🔴 **`httpx` is a NAME COLLISION and the old check verified the wrong tool.**
+     `/usr/bin/httpx` belongs to **`python3-httpx`** — the Python HTTP *client library*
+     CLI, unrelated to projectdiscovery's web prober beyond the name. `go_install`'s old
+     `command -v httpx` guard saw it and **skipped installing the real prober entirely**,
+     so the web team's `httpx` was never the prober. Worse, the pattern was `httpx`, and
+     Kali's python httpx prints `Usage: httpx [OPTIONS] URL` — which *matches*. So the
+     check passed, on the wrong tool, under the right name. All four Go tools are now
+     checked by **absolute GOPATH path**, which removes the ambiguity entirely. The pattern
+     also cannot be the tool's name: projectdiscovery renders it as **ASCII art**, so the
+     literal letters never appear — matching on `Current Version|projectdiscovery` instead.
+  2. 🔴 **One flaky mirror permanently lost a package.** `libreoffice-writer` failed with
+     `Unable to connect to mirrors.netix.net:http: [IP: 87.121.121.4 80]`, and the
+     verification then correctly reported `soffice NOT installed` — so the report-to-PDF
+     path was silently gone. apt does not retry a failed fetch by default, and the same
+     install succeeded by hand minutes later. `-o Acquire::Retries=3` added at every apt
+     call site. Kali's mirror pool is community-run and individual mirrors flake.
+  3. 🔴 **opcattack's real breakage was never cffi.** The review said
+     `requirements.txt` pins `cffi==1.16.0` which cannot build on 3.14 — correct as the
+     *trigger*, but the symptom is `ModuleNotFoundError: No module named 'keepalive'`:
+     `keepalive-socket==0.0.1` is in the same `-r` file, and pip resolves a `-r` file as
+     **one transaction**, so the unbuildable cffi pin took the whole list down. Exactly the
+     pwntools failure shape. Those `==` pins are the author's 2024 dev box, not a security
+     boundary, so the build now strips them and installs one name at a time. **Verified on
+     the box: 11/11 deps install, `keepalive OK`, and `opcattack.py --help` prints
+     `usage: opcattack.py [-h] attack ...`** — which means the narrowed `usage` pattern now
+     passes honestly rather than matching its own traceback.
+  Also: `go install` honours the umask, so binaries came out `-rwxrwx---` in a
+  `drwxrwx---` directory — `chmod 0755` on both now, same determinism rule as everywhere
+  else. The unpinned-artifact count went 19 → 20 because `httpx` is now genuinely being
+  installed and honestly reported as unpinned.
 - ✅ **Closed 2026-10-05 (eighth pass): a teammate's independent review of his own run,
   triaged against our two VM runs.** He re-found two bugs we had already fixed (`stat -c %s`
   on the Burp symlink; the PrivescCheck content sniff) — independent confirmation of both

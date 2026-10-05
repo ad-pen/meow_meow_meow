@@ -257,10 +257,10 @@ print_success "Dropzone created at $USER_HOME/dropzone"
 export DEBIAN_FRONTEND=noninteractive
 
 print_status "Removing needrestart to avoid prompts..."
-sudo apt-get remove needrestart -y -o DPkg::Lock::Timeout=600 2>/dev/null || print_warning "needrestart not installed"
+sudo apt-get remove needrestart -y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 2>/dev/null || print_warning "needrestart not installed"
 
 print_status "Updating package lists..."
-if sudo apt-get update -o DPkg::Lock::Timeout=600; then
+if sudo apt-get update -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3; then
     print_success "Package lists updated"
 else
     print_error "Failed to update packages"
@@ -585,8 +585,8 @@ fin_msg 'Wordlists'
 print_status "Installing Sublime Text..."
 if wget -qO - https://download.sublimetext.com/sublimehq-pub.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/sublimehq-archive.gpg > /dev/null && \
    echo "deb https://download.sublimetext.com/ apt/stable/" | sudo tee /etc/apt/sources.list.d/sublime-text.list > /dev/null && \
-   sudo apt-get update -qq -o DPkg::Lock::Timeout=600 && \
-   sudo env DEBIAN_FRONTEND=noninteractive apt-get install -qq -y -o DPkg::Lock::Timeout=600 \
+   sudo apt-get update -qq -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 && \
+   sudo env DEBIAN_FRONTEND=noninteractive apt-get install -qq -y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
         sublime-text; then
     subl_version=$(subl --version 2>&1)
@@ -751,10 +751,39 @@ else
 fi
 
 if clone_pinned opcattack https://github.com/bvcyber/opcattack "$USER_HOME/dropzone/opcattack"; then
+    # UNPIN THE REQUIREMENTS, then install one name at a time.
+    # Upstream's requirements.txt is fully "==" pinned to 2024 versions and
+    # CANNOT install on Kali's Python 3.14: cffi==1.16.0 has no cp314 wheel and
+    # will not build. pip resolves a -r file as ONE transaction, so that single
+    # bad pin took the entire list down with it - including keepalive-socket,
+    # which provides the `keepalive` module opcattack imports at attacks.py:21.
+    # The build then printed "dependencies failed" and the verification pass
+    # printed "opcattack verified" on the next screen, which is the lie fixed
+    # separately in the check pattern.
+    #
+    # Those pins are the author's 2024 dev box, not a security boundary -
+    # certifi, cffi, cryptography, requests, urllib3 and pycparser all ship
+    # current on Kali and satisfy the imports fine. Dropping the "==" lets them.
+    # One pip call per name so a single unsatisfiable dependency cannot take the
+    # rest with it, which is the whole lesson of the pwntools failure.
     if [ -f "$USER_HOME/dropzone/opcattack/requirements.txt" ]; then
-        pip install -r "$USER_HOME/dropzone/opcattack/requirements.txt" --break-system-packages \
-            && print_success "opcattack dependencies installed" \
-            || print_warning "opcattack dependencies failed - it may not run"
+        OPCA_FAILED=()
+        while read -r dep; do
+            [ -n "$dep" ] || continue
+            pip install "$dep" --break-system-packages >/dev/null 2>&1 \
+                || OPCA_FAILED+=("$dep")
+        done < <(sed 's/[=<>!~].*//' "$USER_HOME/dropzone/opcattack/requirements.txt" | tr -d '\r' | grep -v '^\s*$')
+        if [ ${#OPCA_FAILED[@]} -eq 0 ]; then
+            print_success "opcattack dependencies installed (pins relaxed)"
+        else
+            print_warning "opcattack deps that failed: ${OPCA_FAILED[*]}"
+        fi
+        # The import that actually decides whether the tool runs.
+        if python3 -c "import keepalive" 2>/dev/null; then
+            print_success "opcattack: keepalive module present"
+        else
+            print_warning "opcattack: 'keepalive' still missing - opcattack.py will not import"
+        fi
     fi
     chmod 0755 "$USER_HOME/dropzone/opcattack/opcattack.py" 2>/dev/null
     print_status "Run it with: python3 ~/dropzone/opcattack/opcattack.py --help"
@@ -931,7 +960,7 @@ fi
 print_status "Installing SharpEfsPotato (requires mono for building)..."
 if ! command -v mono &> /dev/null; then
     print_status "Installing mono for C# compilation..."
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 mono-complete mono-devel
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 mono-complete mono-devel
 fi
 
 if [ ! -d "$USER_HOME/dropzone/SharpEfsPotato" ]; then
@@ -1429,12 +1458,30 @@ check_tool "docker"         "docker info 2>/dev/null || sudo docker info" "serve
 check_tool "docker-compose" "docker-compose version"                      "[0-9]+\.[0-9]"
 
 print_status "Checking Go tools..."
-check_tool "httpx"     "httpx -version"     "httpx"
-check_tool "subfinder" "subfinder -version" "subfinder"
+# CHECK THE GOPATH BINARY BY ABSOLUTE PATH, not whatever `httpx` resolves to.
+# Two things went wrong here and they compounded:
+#   1. /usr/bin/httpx belongs to python3-httpx - the Python HTTP *client library*
+#      CLI, a completely unrelated tool that merely shares the name with
+#      projectdiscovery's web prober. go_install's old `command -v httpx` guard
+#      saw it and skipped installing the real prober, so the web team's `httpx`
+#      was never the prober at all.
+#   2. The pattern was "httpx", and Kali's python httpx prints
+#      "Usage: httpx [OPTIONS] URL" - which MATCHES. So the check passed, on the
+#      wrong tool, while reporting the right name.
+# Checking $USER_HOME/go/bin/<tool> removes the ambiguity completely: there is
+# exactly one binary it can be.
+#
+# The pattern also cannot be the tool's name: projectdiscovery renders it as
+# ASCII ART in the banner, so the literal letters never appear. The version line
+# does - "[INF] Current Version: v1.12.0".
+check_cmd "httpx"     "$USER_HOME/go/bin/httpx -version"     "Current Version|projectdiscovery"
+check_cmd "subfinder" "$USER_HOME/go/bin/subfinder -version" "Current Version|projectdiscovery"
 # These two read domains on stdin; empty stdin makes them exit 0 without touching
 # the network, which is the cheapest honest proof that the binary executes.
-check_tool "httprobe"    "printf '' | timeout 10 httprobe"
-check_tool "waybackurls" "printf '' | timeout 10 waybackurls"
+# Same absolute-path rule. These two take stdin and exit 0 on empty input, so
+# there is no pattern - _run_check falls back to the exit code.
+check_cmd "httprobe"    "printf '' | timeout 10 $USER_HOME/go/bin/httprobe"
+check_cmd "waybackurls" "printf '' | timeout 10 $USER_HOME/go/bin/waybackurls"
 
 print_status "Checking screenshot tools..."
 check_tool "flameshot" "flameshot --version" "flameshot"
