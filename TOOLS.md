@@ -447,6 +447,35 @@ Two notes worth keeping:
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--mobile`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (eleventh pass): run 5 is FULLY CLEAN, and the two mechanisms a
+  green run cannot prove were proven by deliberate fault injection.**
+  Run 5 (`667b94a`, clean snapshot, umask 0007): **115 passed, 0 warnings, 0 failed**,
+  `[+] All critical tools verified!`, zero apt failures, zero hash mismatches, 31 artifacts
+  verified against their pins in-run, `chisel installed: 1.12.0`. `start.sh` 2m47s,
+  `all.sh` 32m58s, both exit 0. The only `[-]` line in the whole log is
+  `command logging installed but NOTHING logged yet - hook not loaded` — the one item no
+  script can fix, because loading a shell hook into the shell that invoked the script is
+  impossible.
+  **A clean run proves nothing about error handling**, so `DPkg::Lock::Timeout` and
+  `Acquire::Retries` were tested by causing the faults:
+  - **`DPkg::Lock::Timeout=600`** — held the dpkg frontend lock for 30 s and raced two
+    installs against it on the same box:
+    ```
+    WITHOUT:  E: Unable to acquire the dpkg frontend lock ...   elapsed 0s   -> toilet NOT installed
+    WITH:     Waiting for cache lock: ... held by process 32405  elapsed 31s  -> lolcat INSTALLED
+    ```
+    That is run 1's five-lost-packages failure reproduced on demand and fixed on demand.
+    ⚠️ **Harness note for anyone repeating this: `flock(2)` does NOT work.** apt takes a
+    POSIX `fcntl` record lock, and on Linux the two lock types do not conflict — a
+    `flock -x` on `lock-frontend` is completely ignored by apt and the first two attempts
+    at this test produced a false pass. Hold it with `fcntl.lockf` instead.
+  - **`Acquire::Retries=3`** — pointed apt at a black-holed mirror (`10.255.255.1`) and
+    counted fetch attempts: **2 without the option, 6 with it**. Retries happen.
+  **Five end-to-end runs on the `clean-kali` snapshot, 8 failures → 0.** Every run found
+  something the previous one could not reach, which is the argument for running it to
+  completion rather than reading it: run 1 was blocked by permissions from ever testing
+  Burp, run 2 by a symlink deleted while fixing run 1, run 3 by a flaky mirror, and run 4
+  by an upstream release landing mid-test.
 - ✅ **Closed 2026-10-05 (tenth pass): run 4 — 115 passed, 0 warnings, 0 failed** in the
   verification pass. `start.sh` 12m38s, `all.sh` 36m51s, both exit 0, umask 0007. Every fix
   from runs 1–3 confirmed green: `httpx`/`subfinder`/`httprobe`/`waybackurls` all verified
