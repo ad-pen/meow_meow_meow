@@ -650,20 +650,56 @@ check_file() {
     fi
 }
 
-# check_payload <path> <desc> <pattern> [min-bytes] - for DOWNLOADED files.
+# check_payload <path> <desc> <pattern> [min-bytes] [pin-name] - for DOWNLOADED files.
 # 'curl -f' catches a 404, but a proxy or captive-portal interception page answers
 # 200 and lands on disk as a perfectly successful download. So: check the size,
 # then sniff the first 2 KB for what the file should actually contain. This is the
 # check that catches "linpeas.sh is 1.4 KB of HTML".
+#
+# TWO BUGS FOUND BY THE FIRST REAL all.sh RUN, both of which made this function
+# report a FAIL on a file that was perfectly fine. A verification pass that cries
+# wolf on the single biggest download in the build teaches people to ignore it,
+# so these matter more than the count of 4 failures suggests.
+#
+# 1. `stat -c %s` DOES NOT FOLLOW SYMLINKS. GNU stat uses lstat() by default, so
+#    on a symlink it returns the length of the TARGET PATH STRING, not the file.
+#    /opt/burpsuite/burpsuite.jar is a symlink that install_burp_latest points at
+#    the versioned jar, and the run reported:
+#        "Burp jar is only 48 bytes (expected >= 100000000)"
+#    48 is exactly strlen("/opt/burpsuite/burpsuite_community_v2026.3.3.jar").
+#    Burp was installed, 650 MB of it, and the very next check confirmed it RUNS.
+#    `stat -Lc` dereferences, which is what was meant all along.
+#
+# 2. A sha256 PIN IS STRONGER PROOF THAN ANY CONTENT SNIFF, so when we have one,
+#    use it and skip the sniff. The sniff exists to catch an HTTP 200 that is
+#    really an error page - something that cannot possibly match a pinned hash.
+#    PrivescCheck.ps1 failed /function|param/ because itm4n's RELEASE build is a
+#    single packed base64 blob (`$Verbalizes = "S1mDh0YWn46..."`), so the first
+#    2 KB contain neither word. Its sha256 matched the pin exactly, both at
+#    download time and when re-checked by hand. Guessing at the first 2 KB of
+#    somebody else's release artifact is inherently brittle; a hash is not.
 check_payload() {
-    local f=$1 desc=$2 pat=$3 minb=${4:-1024} sz
+    local f=$1 desc=$2 pat=$3 minb=${4:-1024} pin=${5:-} sz got want
     if [ ! -f "$f" ]; then
         print_error "$desc NOT found"; FAIL=$((FAIL+1)); return 0
     fi
-    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    sz=$(stat -Lc %s "$f" 2>/dev/null || echo 0)
     if [ "$sz" -lt "$minb" ]; then
         print_error "$desc is only ${sz} bytes (expected >= ${minb}) - truncated or an error page"
         FAIL=$((FAIL+1)); return 0
+    fi
+    if [ -n "$pin" ]; then
+        want=${PIN_SHA[$pin]:-TBD}
+        if [ "$want" != "TBD" ]; then
+            got=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
+            if [ "$got" = "$want" ]; then
+                print_success "$desc verified by pinned sha256 (${sz} bytes)"
+                PASS=$((PASS+1)); return 0
+            fi
+            print_error "$desc does NOT match its pinned sha256"
+            print_error "  expected ${want:0:16}...  got ${got:0:16}...  ($f)"
+            FAIL=$((FAIL+1)); return 0
+        fi
     fi
     if head -c 2048 "$f" | grep -qaiE "$pat"; then
         print_success "$desc verified (${sz} bytes)"; PASS=$((PASS+1))

@@ -358,6 +358,17 @@ fin_msg 'APT packages'
 # defence, so a box whose start.sh phase failed for ANY reason still converges
 # when all.sh runs. pip_ensure imports first and skips when present, so on a
 # healthy box these are three no-op import checks.
+# pwntools pulls `unicorn`, which COMPILES C extensions: without cmake it dies on
+# "No such file or directory: 'cmake'", which is exactly how the clean-VM run lost
+# it. cmake and build-essential are in start.sh's apt list now, but this block
+# also has to work (a) on a box built by the OLD start.sh and (b) under --ad-only,
+# where the main apt list above is skipped entirely. apt_install does a dpkg query
+# first, so on a healthy box this is three no-ops.
+# ninja-build is here for icspacket further down - scikit-build-core wants cmake
+# AND ninja, and the OT section cannot install it any earlier than this.
+print_status "Ensuring the build toolchain (needed by compiled Python deps)..."
+apt_install build-essential cmake ninja-build
+
 print_status "Ensuring base Python runtime (start.sh's set)..."
 pip_ensure requests requests
 pip_ensure bs4 beautifulsoup4
@@ -644,7 +655,36 @@ pip_ensure asyncua asyncua        # OPC-UA client library; also opcattack's depe
 # It is a LIBRARY, not a CLI - you write a few lines of Python against it. That is
 # the right shape for the read-only doctrine above: a scripted read is easier to
 # keep harmless, and easier to put in the report, than an interactive attack tool.
-pip_ensure icspacket icspacket
+# icspacket: WHEEL FIRST, THEN BUILD FROM THE TAGGED SOURCE.
+# The clean-VM run failed here with a message that reads like the package does
+# not exist:
+#     ERROR: Could not find a version that satisfies the requirement icspacket
+#            (from versions: none)
+# It does exist. icspacket 0.3.1 publishes ONLY pre-built C-extension wheels for
+# cp310-cp313 and NO sdist, and Kali rolling has moved to Python 3.14 (3.14.7 on
+# the test box - start.sh's own log shows the 3.13 -> 3.14 jump). pip therefore
+# finds zero installable files. Upstream's "Python :: 3.14" classifier is
+# aspirational; there is no cp314 wheel behind it.
+#
+# Building from source works and is verified, not assumed: on Python 3.14.7 the
+# tag below builds icspacket-0.3.1-cp314-cp314-linux_x86_64.whl and imports
+# cleanly. scikit-build-core needs cmake + ninja + gcc, which the toolchain block
+# after the apt phase installs.
+#
+# The tag is pinned rather than tracking the default branch: this is a source
+# build of third-party code, so "whatever is on master today" is not acceptable.
+ICSPACKET_TAG=v0.3.1
+if python3 -c "import icspacket" &>/dev/null; then
+    print_success "python: icspacket already present (skip)"
+elif pip install icspacket --break-system-packages 2>/dev/null; then
+    print_success "python: icspacket installed (upstream wheel)"
+elif pip install "git+https://github.com/MatrixEditor/icspacket@${ICSPACKET_TAG}" \
+        --break-system-packages; then
+    print_success "python: icspacket built from source (${ICSPACKET_TAG})"
+else
+    print_warning "python: icspacket FAILED - no wheel for this Python and the source build failed"
+    print_warning "  needs cmake + ninja + gcc; check the toolchain block above succeeded"
+fi
 
 if clone_pinned opcattack https://github.com/bvcyber/opcattack "$USER_HOME/dropzone/opcattack"; then
     if [ -f "$USER_HOME/dropzone/opcattack/requirements.txt" ]; then
@@ -1336,11 +1376,11 @@ check_tool "maim"      "maim --version"      "[0-9]"
 
 print_status "Checking privilege escalation scripts..."
 check_script  "$USER_HOME/dropzone/privesc/linpeas.sh" "linpeas.sh"
-check_payload "$USER_HOME/dropzone/privesc/winpeas.exe"      "winpeas.exe"      "^MZ"                 100000
-check_payload "$USER_HOME/dropzone/pspy64"                   "pspy64"           "ELF"                 1000000
-check_payload "$USER_HOME/dropzone/privesc/PowerUp.ps1"      "PowerUp.ps1"      "function|param"      10000
-check_payload "$USER_HOME/dropzone/privesc/PrivescCheck.ps1" "PrivescCheck.ps1" "function|param"      10000
-check_payload "$USER_HOME/dropzone/privesc/privesc.ps1"      "privesc.ps1"      "function|param|write" 5000
+check_payload "$USER_HOME/dropzone/privesc/winpeas.exe"      "winpeas.exe"      "^MZ"                 100000 winpeas
+check_payload "$USER_HOME/dropzone/pspy64"                   "pspy64"           "ELF"                 1000000 pspy64
+check_payload "$USER_HOME/dropzone/privesc/PowerUp.ps1"      "PowerUp.ps1"      "function|param"      10000 powerup
+check_payload "$USER_HOME/dropzone/privesc/PrivescCheck.ps1" "PrivescCheck.ps1" "function|param"      10000 privesccheck
+check_payload "$USER_HOME/dropzone/privesc/privesc.ps1"      "privesc.ps1"      "function|param|write" 5000 privesc_ps1
 check_payload "$USER_HOME/dropzone/username-anarchy"         "username-anarchy" "ruby|#!"              5000
 check_script  "/usr/local/bin/upshell" "upshell"
 

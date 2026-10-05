@@ -447,6 +447,57 @@ Two notes worth keeping:
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--ismael`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (sixth pass): the first REAL `all.sh` run** (on a box built by the
+  *old* `start.sh`). Result: **109 passed, 2 warnings, 4 failed** — and **two of the four
+  failures were the verification lying about a file that was fine.** That is worse than it
+  sounds: a pass that cries wolf on the single biggest download in the build teaches the
+  team to ignore it.
+  1. **`stat -c %s` does not follow symlinks.** GNU `stat` uses `lstat()` by default, so on
+     a symlink it returns the length of the *target path string*. `check_payload` reported
+     `Burp jar is only 48 bytes (expected >= 100000000)` — and 48 is exactly
+     `strlen("/opt/burpsuite/burpsuite_community_v2026.3.3.jar")`, the target of the
+     symlink `install_burp_latest` creates. Burp was installed, all 650 MB of it, and the
+     *next* check line confirmed it runs. Now `stat -Lc %s`.
+  2. **`PrivescCheck.ps1` failed a content sniff it can never pass.** itm4n's release build
+     is a single packed base64 blob (`$Verbalizes = "S1mDh0YWn46..."`), so the first 2 KB
+     contain neither `function` nor `param`. Its sha256 matched the pin exactly — at
+     download time *and* when re-fetched and re-hashed by hand
+     (`60eacd57fc869e36…`, 924 KB, ASCII). **A sha256 pin is stronger proof than any
+     content sniff**, so `check_payload` now takes an optional pin name and uses the hash
+     when it has one, falling back to the sniff only for unpinned files (which is the case
+     the sniff was written for — an HTTP 200 that is really an error page cannot match a
+     pinned hash). Wired up for `winpeas`, `pspy64`, `powerup`, `privesccheck`,
+     `privesc_ps1`. Tested four ways: symlink deref, pin-passes, unpinned-still-sniffs,
+     and **tampered-file-with-a-pin still FAILS loudly** — the hash path is not a rubber
+     stamp.
+  3. **`icspacket` genuinely could not install**, and the error message actively misleads:
+     `Could not find a version that satisfies the requirement icspacket (from versions:
+     none)` reads as "no such package". The package exists; it publishes **only
+     cp310–cp313 C-extension wheels and no sdist**, and Kali rolling has moved to **Python
+     3.14** (3.14.7 on the test box — `start.sh`'s log shows the 3.13 → 3.14 jump), so pip
+     finds zero installable files. Upstream's `Python :: 3.14` classifier is aspirational.
+     **Reproduced and fixed on Python 3.14.7 locally**: `all.sh` now tries the wheel, then
+     builds from the pinned tag `v0.3.1`, which produces
+     `icspacket-0.3.1-cp314-cp314-linux_x86_64.whl` and imports cleanly. `scikit-build-core`
+     needs cmake + ninja + gcc, so `ninja-build` joins the toolchain block. The tag is
+     pinned, not `master` — this is a source build of third-party code.
+  4. **`pwntools` failed exactly as the fifth pass predicted**, which also exposed an
+     ordering bug in that fix: `cmake` had been added to `start.sh` and to the **AD** apt
+     list, but the base-runtime `pip_ensure` block runs *before* the AD section and is
+     *outside* the `WANT_REST` gate — so under `--ad-only`, or on a box built by the old
+     `start.sh`, `pip_ensure pwn pwntools` would still have had no `cmake`. The toolchain
+     (`build-essential`, `cmake`, `ninja-build`) now installs immediately before the
+     Python block, in every mode.
+  The remaining preflight FAIL — *"command logging installed but NOTHING logged yet, hook
+  not loaded"* — is the one item no script can fix, and the sixth-pass preflight already
+  says so instead of telling the operator to re-run the installer.
+  ⚠️ **Still open from this run: 19 artifacts were cloned at HEAD with no version pin**
+  (`kali_wordlists jwt_tool httprobe waybackurls subfinder opcattack modbuster
+  Ghostpack-CompiledBinaries SharpEfsPotato PKINITtools bloodyAD pywhisker
+  targetedKerberoast krbrelayx gMSADumper KeyTabExtract certighost PowerUpSQL
+  cve_2023_29360`). Two operators building on different days get different code. This is a
+  `bash pins.sh --record` away and has **not** been done — it needs a build to pin *from*,
+  and ideally the one that goes to the engagement.
 - ✅ **Closed 2026-10-05 (fifth pass): the first REAL clean-Kali-VM run of `start.sh`.**
   Every prior pass was reviewed or dry-run; this one ran on a fresh image and the log
   showed four defects no amount of reading had caught.
