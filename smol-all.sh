@@ -35,7 +35,35 @@ print_error()   { echo -e "${RED}[-]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[!]${NC} $1"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="$HOME/smol_install.log"
+
+# Sudo-safe home, duplicated from lib.sh for the same reason as everything else in
+# this file: it must run on a freshly rebuilt box where the clone may be partial,
+# so it sources nothing. Keep in step with cptc_user_home() in lib.sh.
+cptc_user_home() {
+    local dir u home
+    dir="$SCRIPT_DIR"
+    if [[ $dir =~ ^/home/([^/]+)(/|$) ]]; then
+        u="${BASH_REMATCH[1]}"
+        home=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+        if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
+        if [ -d "/home/$u" ]; then printf '%s\n' "/home/$u"; return 0; fi
+    fi
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+        home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+        if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
+    fi
+    printf '%s\n' "$HOME"
+}
+USER_HOME="$(cptc_user_home)"
+CPTC_USER="$(stat -c %U "$USER_HOME" 2>/dev/null || id -un)"
+own_user() {
+    [ "$(id -u)" -eq 0 ] || return 0
+    [ -n "${CPTC_USER:-}" ] || return 0
+    chown -R "$CPTC_USER:" "$@" 2>/dev/null
+    return 0
+}
+
+LOG_FILE="$USER_HOME/smol_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 WANT_WEB=1; WANT_AD=1; WANT_BURP=1; WANT_LOG=1; ROLE_SET=0
@@ -76,7 +104,10 @@ WEB_PKGS=(ffuf feroxbuster gobuster nikto whatweb nuclei)
 PKGS=("${CORE_PKGS[@]}")
 [ "$WANT_AD"  -eq 1 ] && PKGS+=("${AD_PKGS[@]}")
 [ "$WANT_WEB" -eq 1 ] && PKGS+=("${WEB_PKGS[@]}")
-[ "$WANT_WEB" -eq 1 ] && [ "$WANT_BURP" -eq 1 ] && PKGS+=(burpsuite)
+# Burp is NOT an apt package any more (see all.sh): it comes from PortSwigger.
+# default-jdk is what it needs - Burp's entry point is Java 21 bytecode and
+# openjdk-11 cannot load it.
+[ "$WANT_WEB" -eq 1 ] && [ "$WANT_BURP" -eq 1 ] && PKGS+=(default-jdk unzip)
 
 # Drop anything already installed BEFORE talking to the network - on a partially
 # rebuilt box this alone can cut the run to seconds.
@@ -95,13 +126,15 @@ else
     # ONE transaction first: it is dramatically faster than all.sh's one-at-a-time
     # loop. Only if that transaction fails do we fall back to per-package installs,
     # so we get all.sh's failure isolation without paying for it up front.
-    if sudo apt-get install -y "${TODO[@]}"; then
+    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+           -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "${TODO[@]}"; then
         print_success "All packages installed in one pass"
     else
         print_warning "Batch install failed - retrying one at a time to isolate the bad package"
         FAILED=()
         for p in "${TODO[@]}"; do
-            if sudo apt-get install -y "$p"; then
+            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                   -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$p"; then
                 print_success "$p installed"
             else
                 print_warning "$p FAILED"
@@ -115,13 +148,13 @@ fi
 # --- the two downloads worth waiting for -----------------------------------
 # Everything else in all.sh's download list can wait; you cannot pivot without a
 # tunnel and you cannot triage a Linux foothold without linpeas.
-mkdir -p "$HOME/dropzone/privesc"
-if [ ! -s "$HOME/dropzone/privesc/linpeas.sh" ]; then
+mkdir -p "$USER_HOME/dropzone/privesc"
+if [ ! -s "$USER_HOME/dropzone/privesc/linpeas.sh" ]; then
     print_status "Fetching linpeas..."
     if curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 \
         https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh \
-        -o "$HOME/dropzone/privesc/linpeas.sh"; then
-        chmod +x "$HOME/dropzone/privesc/linpeas.sh"
+        -o "$USER_HOME/dropzone/privesc/linpeas.sh"; then
+        chmod +x "$USER_HOME/dropzone/privesc/linpeas.sh"
         print_success "linpeas -> ~/dropzone/privesc/linpeas.sh"
     else
         print_warning "linpeas download failed (non-critical)"
@@ -143,6 +176,47 @@ if ! command -v chisel &>/dev/null; then
     fi
 else
     print_success "chisel already present"
+fi
+
+# --- Burp Suite Community (latest), BEFORE the logging extension -----------
+# Order matters: burp_logging.sh patches Burp's UserConfig*.json so the extension
+# auto-loads, and that file only exists once Burp is installed. The URLs here are
+# duplicated from lib.sh for the same reason as linpeas and chisel above - this
+# script must survive a partial clone.
+if [ "$WANT_WEB" -eq 1 ] && [ "$WANT_BURP" -eq 1 ]; then
+    if [ -s /opt/burpsuite/burpsuite.jar ]; then
+        print_success "Burp already installed ($(cat /opt/burpsuite/VERSION 2>/dev/null || echo '?'))"
+    else
+        print_status "Fetching Burp Suite Community (~650 MB - the slow part of this script)..."
+        BURP_URL="https://portswigger.net/burp/releases/download?product=community&type=Jar"
+        bver=$(curl -fsSL --max-time 60 -r 0-0 -D - -o /dev/null "$BURP_URL" 2>/dev/null \
+               | tr -d '\r' \
+               | sed -n 's/.*filename=burpsuite_community_v\([0-9][^;[:space:]]*\)\.jar.*/\1/p' | head -n1)
+        bver=${bver:-unknown}
+        sudo mkdir -p /opt/burpsuite
+        if sudo curl -fSL --retry 2 --connect-timeout 15 --max-time 1800 "$BURP_URL" \
+                -o /opt/burpsuite/burpsuite.jar.part \
+           && sudo head -c 2 /opt/burpsuite/burpsuite.jar.part | grep -qa '^PK'; then
+            sudo mv -f /opt/burpsuite/burpsuite.jar.part /opt/burpsuite/burpsuite.jar
+            printf '%s\n' "$bver" | sudo tee /opt/burpsuite/VERSION >/dev/null
+            sudo tee /usr/local/bin/burpsuite >/dev/null <<'WRAP'
+#!/bin/sh
+JAR=/opt/burpsuite/burpsuite.jar
+for cand in $(ls -d /usr/lib/jvm/*/bin/java 2>/dev/null | sort -rV) "$(command -v java 2>/dev/null)"; do
+    [ -x "$cand" ] || continue
+    v=$("$cand" -version 2>&1 | sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' | head -n1)
+    [ -n "$v" ] && [ "$v" -ge 21 ] 2>/dev/null && exec "$cand" -jar "$JAR" "$@"
+done
+echo "burpsuite: no Java 21+ found (sudo apt install -y default-jdk)" >&2
+exit 1
+WRAP
+            sudo chmod 0755 /usr/local/bin/burpsuite
+            print_success "Burp $bver -> /opt/burpsuite (launcher: burpsuite)"
+        else
+            sudo rm -f /opt/burpsuite/burpsuite.jar.part
+            print_warning "Burp download failed - run all.sh later to retry"
+        fi
+    fi
 fi
 
 # --- re-arm the engagement evidence layer ----------------------------------
@@ -195,7 +269,11 @@ if [ "$WANT_WEB" -eq 1 ]; then
     smoke ffuf "ffuf -V" "ffuf"
     smoke feroxbuster "feroxbuster --version" "feroxbuster"
     smoke nuclei "nuclei -version" "nuclei"
+    # Checking 'java' alone is not enough: Kali ships openjdk-11 as well and Burp
+    # needs 21. Run the launcher - it is the only thing that proves the right JVM
+    # was picked, and it is where UnsupportedClassVersionError would surface.
     [ "$WANT_BURP" -eq 1 ] && smoke java "java -version" "version"
+    [ "$WANT_BURP" -eq 1 ] && smoke burpsuite "timeout 180 burpsuite --version" "burp|version"
 fi
 
 echo

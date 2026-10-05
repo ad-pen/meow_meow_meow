@@ -27,12 +27,18 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+# USER_HOME is exported by jvis_logsync.sh, which resolves it from the script's
+# own path rather than $HOME so a sudo launch still finds the operator's logs
+# instead of root's empty ones. Falling back to ~ keeps a direct `python3
+# jvis_logsync.py ...` invocation working.
+_HOME = os.environ.get("USER_HOME") or os.path.expanduser("~")
+
 SOURCES = {
-    "zsh":  os.path.expanduser("~/.zsh_history_readable"),
-    "burp": os.path.expanduser("~/.burp_history_readable"),
+    "zsh":  os.path.join(_HOME, ".zsh_history_readable"),
+    "burp": os.path.join(_HOME, ".burp_history_readable"),
 }
 
-STATE_FILE = os.path.expanduser("~/.jvis_logsync_state.json")
+STATE_FILE = os.path.join(_HOME, ".jvis_logsync_state.json")
 
 # Both burp_logger.py and command_logging.sh prefix every line with a local
 # timestamp in this shape. Parsing it back lets the server correlate events

@@ -66,7 +66,18 @@ BODY_METHODS_IF_NONEMPTY = set(["DELETE"])
 # Redaction
 # --------------------------------------------------------------------------
 
-_FULL_KEYS    = r"password|passwd|passphrase|pwd|secret"
+# ⚠️ KEEP IN STEP WITH command_logging.sh's always-on 'password|passwd|...' rule.
+# These two redactors are the two halves of one evidence layer, and they had
+# already diverged: this list was missing a bare `pass`, so a login form posting
+# `user=admin&pass=hunter2` was logged in clear while the shell side redacted the
+# same key. `pass` is one of the commonest field names in a web form, and web is
+# the deepest sub-team. Added 2026-10-05, along with pw/passcode/credential.
+# `redaction_test.sh` now exercises BOTH redactors against one shared battery of
+# cases, so the next divergence fails a test instead of reaching the client.
+# Longest alternatives first (the `=` anchor makes order harmless, but it reads
+# clearer and is robust if the anchor is ever relaxed).
+_FULL_KEYS    = (r"passphrase|passcode|passwd|password|credentials|credential"
+                 r"|secret|pwd|pass|pw")
 _TOKEN_KEYS   = r"token|access_token|refresh_token|api_key|apikey|bearer"
 _SESSION_KEYS = r"session|sessionid|phpsessid|jsessionid"
 _HASH_KEYS    = r"hash(?:es)?|nthash(?:es)?|lmhash|nthashes|aeskey|ntlm"

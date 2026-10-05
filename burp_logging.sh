@@ -19,13 +19,51 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BURP_DIR="$HOME/.BurpSuite"
+
+# ---------------------------------------------------------------------------
+# WHOSE HOME IS IT?  - duplicated from lib.sh ON PURPOSE
+# ---------------------------------------------------------------------------
+# This script is standalone: start.sh, all.sh and smol-all.sh all invoke it, and
+# it must work without sourcing anything. Keep in step with cptc_user_home() in
+# lib.sh.
+#
+# It writes into the OPERATOR's home. Under sudo, $USER_HOME is /root, so everything
+# below would configure root's account and the real user would get none of it -
+# while the verification afterwards looked in the real home and reported it
+# missing. The home is therefore derived from this script's own path: an operator
+# clones the repo into their own home, so the path names them.
+_cptc_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cptc_user_home() {
+    local dir u home
+    dir="$_cptc_script_dir"
+    if [[ $dir =~ ^/home/([^/]+)(/|$) ]]; then
+        u="${BASH_REMATCH[1]}"
+        home=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+        if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
+        if [ -d "/home/$u" ]; then printf '%s\n' "/home/$u"; return 0; fi
+    fi
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+        home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+        if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
+    fi
+    printf '%s\n' "$USER_HOME"
+}
+USER_HOME="${USER_HOME:-$(cptc_user_home)}"
+CPTC_USER="$(stat -c %U "$USER_HOME" 2>/dev/null || id -un)"
+own_user() {
+    [ "$(id -u)" -eq 0 ] || return 0
+    [ -n "${CPTC_USER:-}" ] || return 0
+    chown -R "$CPTC_USER:" "$@" 2>/dev/null
+    return 0
+}
+
+BURP_DIR="$USER_HOME/.BurpSuite"
 JYTHON_JAR="$BURP_DIR/jython-standalone.jar"
 JYTHON_VER="2.7.3"
 JYTHON_URL="https://repo1.maven.org/maven2/org/python/jython-standalone/${JYTHON_VER}/jython-standalone-${JYTHON_VER}.jar"
 EXT_SRC="$SCRIPT_DIR/burp_logger.py"
 EXT_DST="$BURP_DIR/burp_logger.py"
-LOG_FILE="$HOME/.burp_history_readable"
+LOG_FILE="$USER_HOME/.burp_history_readable"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 print_status()  { echo -e "${BLUE}[*]${NC} $1"; }

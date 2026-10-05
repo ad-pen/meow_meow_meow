@@ -2,7 +2,7 @@
 
 set -u
 
-LOG_FILE="$HOME/all_install.log"
+LOG_FILE="$USER_HOME/all_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 # Resolve our own location so we can source lib.sh and name sibling scripts,
@@ -19,6 +19,38 @@ if [ ! -f "$SCRIPT_DIR/lib.sh" ]; then
 fi
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
+
+# ---------------------------------------------------------------------------
+# ROLES
+# With no arguments this behaves exactly as it always did - the full suite.
+# --ismael ADDS the two heaviest things in the build, which only the mobile/AI
+# owner actually needs and which everyone else was previously paying for:
+#   * the mobile kit incl. Android Studio   ~1.6 GB download
+#   * the nuclei-templates clone            ~731 MB (full history)
+# Measured sizes are in TOOLS.md. Deliberately the ONLY role: every other tool
+# stays default-on, because splitting further costs more in "which flag do I
+# need again?" on engagement morning than it saves in bandwidth.
+# ---------------------------------------------------------------------------
+WANT_ISMAEL=0
+for arg in "$@"; do
+    case "$arg" in
+        --ismael) WANT_ISMAEL=1 ;;
+        -h|--help)
+            cat <<'USAGE'
+Usage: all.sh [--ismael]
+
+  (no arguments)   Install the full standard suite. Unchanged from before.
+  --ismael         ALSO install the mobile kit (jadx, apktool, adb, frida-tools,
+                   Android Studio) and clone nuclei-templates.
+                   Adds roughly 2.3 GB of downloads. Mobile/AI owner only.
+  -h, --help       Show this and exit.
+USAGE
+            exit 0 ;;
+        *)
+            echo "[-] Unknown argument: $arg  (try: bash all.sh --help)"
+            exit 1 ;;
+    esac
+done
 
 echo -e "${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
@@ -48,33 +80,33 @@ preflight() {
     echo
 
     # [0] did start.sh run at all
-    if [ -f "$HOME/start_install.log" ]; then
+    if [ -f "$USER_HOME/start_install.log" ]; then
         pf_ok "start.sh has been run on this box"
     else
-        pf_bad "start.sh has NOT been run on this box (no ~/start_install.log)" \
+        pf_bad "start.sh has NOT been run on this box (no $USER_HOME/start_install.log)" \
                "bash \"$SCRIPT_DIR/start.sh\""
     fi
 
     # [1] command logging: installed in the rc files, AND actually loaded.
     # A loaded hook is the only thing that proves it: the log file only grows
     # once a shell has sourced the block, so a non-empty log == activated.
-    if grep -q "cptc engagement logging" "$HOME/.zshrc" "$HOME/.bashrc" 2>/dev/null; then
-        pf_ok "command logging block installed in ~/.zshrc / ~/.bashrc"
-        if [ -s "$HOME/.zsh_history_readable" ]; then
-            pf_ok "command logging is LIVE ($(wc -l < "$HOME/.zsh_history_readable") lines so far)"
+    if grep -q "cptc engagement logging" "$USER_HOME/.zshrc" "$USER_HOME/.bashrc" 2>/dev/null; then
+        pf_ok "command logging block installed in $USER_HOME/.zshrc / $USER_HOME/.bashrc"
+        if [ -s "$USER_HOME/.zsh_history_readable" ]; then
+            pf_ok "command logging is LIVE ($(wc -l < "$USER_HOME/.zsh_history_readable") lines so far)"
         else
             pf_bad "command logging installed but NOTHING logged yet - hook not loaded" \
-                   "source ~/.zshrc   (or ~/.bashrc, or open a fresh shell) then re-run this"
+                   "source $USER_HOME/.zshrc   (or $USER_HOME/.bashrc, or open a fresh shell) then re-run this"
         fi
     else
         pf_bad "command logging NOT configured" \
-               "bash \"$SCRIPT_DIR/command_logging.sh\"  then  source ~/.zshrc"
+               "bash \"$SCRIPT_DIR/command_logging.sh\"  then  source $USER_HOME/.zshrc"
     fi
 
     # [2] uniform terminal - both emulators, so screenshots match across the team
     local uni=0
-    grep -q "^colorScheme=CPTC" "$HOME/.config/qterminal.org/qterminal.ini" 2>/dev/null && uni=$((uni+1))
-    grep -q "^ColorPalette=" "$HOME/.config/xfce4/terminal/terminalrc" 2>/dev/null && uni=$((uni+1))
+    grep -q "^colorScheme=CPTC" "$USER_HOME/.config/qterminal.org/qterminal.ini" 2>/dev/null && uni=$((uni+1))
+    grep -q "^ColorPalette=" "$USER_HOME/.config/xfce4/terminal/terminalrc" 2>/dev/null && uni=$((uni+1))
     if [ "$uni" -eq 2 ]; then
         pf_ok "uniform terminal applied (qterminal + xfce4-terminal)"
     elif [ "$uni" -eq 1 ]; then
@@ -84,25 +116,11 @@ preflight() {
         pf_bad "uniform terminal NOT applied" "bash \"$SCRIPT_DIR/terminal_uniform.sh\""
     fi
 
-    # [3] Burp logging: extension staged AND registered for auto-load
-    if [ -f "$HOME/.BurpSuite/burp_logger.py" ] && [ -s "$HOME/.BurpSuite/jython-standalone.jar" ]; then
-        if grep -q "burp_logger.py" "$HOME"/.BurpSuite/UserConfig*.json 2>/dev/null; then
-            pf_ok "Burp logger staged and registered for auto-load"
-        else
-            pf_bad "Burp logger staged but NOT registered - Burp will not load it" \
-                   "bash \"$SCRIPT_DIR/burp_logging.sh\"  (with Burp CLOSED)"
-        fi
-        # Soft: proves it actually fired. Requires having opened Burp once, so it
-        # is a reminder, not a blocker.
-        if [ -s "$HOME/.burp_history_readable" ]; then
-            pf_ok "Burp logger has written traffic (verified working)"
-        else
-            pf_note "Burp logger has never written a line - not yet verified" \
-                    "start Burp, send one Repeater request, check ~/.burp_history_readable"
-        fi
-    else
-        pf_bad "Burp logging NOT configured" "bash \"$SCRIPT_DIR/burp_logging.sh\""
-    fi
+    # [3] Burp: deliberately NOT checked here any more.
+    # all.sh now installs Burp itself and then wires in the logging extension, in
+    # that order, further down this script. A preflight cannot demand something
+    # the same run is about to provide - that check used to fail on every fresh
+    # box and taught people to ignore the preflight output.
 }
 
 if [ "${SKIP_PREFLIGHT:-0}" = "1" ]; then
@@ -119,19 +137,20 @@ else
         print_warning "engagement log, and that log is what answers 'prove what you did at time T'."
     fi
     echo
-    if [ -t 0 ]; then
-        read -r -p "Proceed with all.sh? [N/y]: " -n 1 REPLY; echo
-        if [[ ! ${REPLY:-} =~ ^[Yy]$ ]]; then
-            print_error "Aborted. Fix the items above, then: bash \"$SCRIPT_DIR/all.sh\""
+    # NON-INTERACTIVE BY DESIGN. This used to stop and ask "Proceed? [N/y]", which
+    # meant a build could not be started and left alone - and on a box with no TTY
+    # it refused to run at all. The preflight's value is the DIAGNOSIS, not the
+    # gate: it tells you precisely which manual step is missing and how to fix it.
+    # So it now reports and continues. Set STRICT_PREFLIGHT=1 to make a failure
+    # abort instead, for anyone who wants the old behaviour in a rehearsal.
+    if [ "$PREFLIGHT_FAIL" -ne 0 ]; then
+        if [ "${STRICT_PREFLIGHT:-0}" = "1" ]; then
+            print_error "STRICT_PREFLIGHT=1 and $PREFLIGHT_FAIL check(s) failed - aborting."
+            print_error "Fix the items above, then: bash \"$SCRIPT_DIR/all.sh\""
             exit 1
         fi
-        print_status "Proceeding..."
-    elif [ "$PREFLIGHT_FAIL" -eq 0 ]; then
-        print_status "No TTY - preflight is clean, continuing without a prompt."
-    else
-        print_error "No TTY and $PREFLIGHT_FAIL preflight failure(s) - refusing to continue."
-        print_error "Re-run interactively, or override with: SKIP_PREFLIGHT=1 bash \"$SCRIPT_DIR/all.sh\""
-        exit 1
+        print_warning "Continuing anyway (nothing here blocks installing tools)."
+        print_warning "FIX THE ITEMS ABOVE AFTERWARDS - they are listed again at the end."
     fi
 fi
 
@@ -153,23 +172,14 @@ else
 fi
 
 
-if [ -d "$HOME/dropzone" ]; then
-    print_warning "Dropzone directory exists, maybe you ran this before?"
-    # Re-running is the NORMAL case: apt_install / pip_ensure / fetch_pinned / go_install are
-    # all idempotent and skip completed work. Only prompt if a human is actually there;
-    # without a TTY, default to continuing instead of aborting. (Previously any
-    # non-interactive re-run died here with "Installation cancelled by user".)
-    if [ -t 0 ]; then
-        read -p "Continue anyway? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_error "Installation cancelled by user"
-            exit 1
-        fi
-    else
-        print_status "No TTY - assuming re-run is intended (installers are idempotent)."
-    fi
-    print_status "Continuing with installation..."
+if [ -d "$USER_HOME/dropzone" ]; then
+    # Re-running is the NORMAL case, not an error: apt_install, pip_ensure,
+    # fetch_pinned, clone_pinned and go_install are all idempotent and skip work
+    # that is already done - REHEARSAL.md step 11 exists to test exactly that. So
+    # this is a note, not a question. It used to prompt "Continue anyway? (y/N)",
+    # which made an unattended re-run impossible.
+    print_status "Dropzone already exists - this looks like a re-run. Installers are"
+    print_status "  idempotent, so completed work is skipped. Continuing."
 fi
 
 print_status "Checking sudo privileges..."
@@ -182,9 +192,12 @@ print_success "Sudo privileges confirmed"
 while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 
 print_status "Creating dropzone directory..."
-mkdir -p ~/dropzone
-cd ~/dropzone
-print_success "Dropzone created at ~/dropzone"
+mkdir -p "$USER_HOME/dropzone"
+cd "$USER_HOME/dropzone" || { print_error "cannot cd to $USER_HOME/dropzone"; exit 1; }
+# Hand it back if we are root (sudo run) - otherwise the operator ends up with a
+# dropzone they cannot write to without sudo for the rest of the engagement.
+own_user "$USER_HOME/dropzone"
+print_success "Dropzone created at $USER_HOME/dropzone"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -204,11 +217,34 @@ apt_install \
     apt-transport-https libssl-dev mc seclists curl golang gobuster nbtscan \
     onesixtyone oscanner smbclient smbmap smtp-user-enum snmp sslscan sipvicious \
     tnscmd10g whatweb hashcat feroxbuster dnsrecon redis-tools git \
-    wget aircrack-ng set hydra docker.io docker-compose openjdk-11-jdk john awscli \
-    sshuttle ffuf burpsuite python3-venv nuclei dirsearch flameshot scrot \
+    wget aircrack-ng set hydra docker.io docker-compose openjdk-11-jdk default-jdk john awscli \
+    sshuttle ffuf python3-venv nuclei dirsearch flameshot scrot \
     maim cyberchef enum4linux nikto wfuzz steghide binwalk exiftool \
     netcat-traditional socat proxychains4 masscan metasploit-framework responder \
-    netexec zaproxy wireshark tcpdump tmux screen remmina terminator
+    netexec wireshark tcpdump tmux screen remmina terminator \
+    arjun phpggc rlwrap unzip
+# REMOVED: burpsuite (the apt package). Burp is now installed from PortSwigger's
+#   official "latest community" download instead - see install_burp_latest in lib.sh.
+#   Two reasons: the archive package is whatever version Kali froze, and the rules
+#   permit Community only (Pro is banned), so being explicit about the edition we
+#   fetched is worth more than an apt one-liner. Boxes built before this change
+#   still have the apt one: sudo apt purge burpsuite
+# ADDED: default-jdk. NOT optional, and openjdk-11-jdk does NOT cover it. Burp's
+#   own entry point burp/StartBurp is class-file major 65, i.e. Java 21; measured
+#   on 2026.3.3, and an older JVM dies with:
+#     UnsupportedClassVersionError: burp/StartBurp has been compiled by a more
+#     recent version of the Java Runtime (class file version 65.0) ...
+#   openjdk-11-jdk STAYS because ysoserial's gadget chains want an old runtime.
+#   The /usr/local/bin/burpsuite wrapper picks a JVM >= 21 rather than trusting
+#   whatever 'java' resolves to.
+# REMOVED: zaproxy. 211 MB download / 267 MB on disk for a second intercepting
+#   proxy we do not use - burpsuite is the one the team actually runs, and Burp is
+#   the one wired into the engagement-evidence layer (burp_logging.sh). Boxes built
+#   before this change still have it: sudo apt purge zaproxy.
+# ADDED: arjun (hidden HTTP parameter discovery), phpggc (PHP deserialisation gadget
+#   chains - pulls php-cli), rlwrap (readline wrapper; 'rlwrap nc -lvnp 443' makes a
+#   raw reverse shell survivable), unzip (needed to unpack the AzureHound release).
+#   All four together are about 1 MB.
 # Notes on three entries above:
 #  * docker-compose      - Kali packages Compose v2 (2.40.3-3). This replaces an 8-line
 #                          curl of a ~49 MB binary from GitHub into /usr/local/bin, i.e.
@@ -249,6 +285,37 @@ fi
 
 fin_msg 'APT packages'
 
+# ---------------------------------------------------------------------------
+# BURP SUITE + ITS LOGGING EXTENSION  - in that order, and both live HERE
+# ---------------------------------------------------------------------------
+# These two moved out of start.sh on purpose. start.sh used to install the Burp
+# LOGGING EXTENSION while Burp itself came from all.sh's apt list much later, so
+# on a fresh box burp_logging.sh ran against a machine with no Burp on it: it
+# could stage the jython jar and the extension, but it had no UserConfig*.json to
+# patch (Burp writes that on first run), so the auto-load registration silently
+# did not happen. The operator then started Burp for the first time, got no
+# extension, and nothing in the logs explained why.
+#
+# ORDER MATTERS AND IS NOW ENFORCED BY SEQUENCE: install Burp, let the config
+# exist, then wire the extension in.
+print_status "Installing Burp Suite Community (latest, from PortSwigger)..."
+if install_burp_latest; then
+    BURP_OK=1
+else
+    BURP_OK=0
+    print_warning "Burp install failed - the logging extension will be staged anyway"
+    print_warning "  so it is in place once Burp is available."
+fi
+
+print_status "Configuring Burp Suite HTTP logging..."
+if bash "$SCRIPT_DIR/burp_logging.sh"; then
+    print_success "Burp logging configured (readable log: $USER_HOME/.burp_history_readable)"
+else
+    print_warning "Burp logging setup reported an issue - see output above"
+fi
+own_user "$USER_HOME/.BurpSuite" 2>/dev/null
+fin_msg 'Burp Suite + engagement logging'
+
 # Download jsmith wordlists
 #git clone https://github.com/insidetrust/statistically-likely-usernames
 #fin_msg 'jsmith wordlists' 
@@ -269,36 +336,36 @@ fin_msg 'APT packages'
 
 
 print_status "Creating privesc tools directory..."
-mkdir -p ~/dropzone/privesc
-cd ~/dropzone
+mkdir -p $USER_HOME/dropzone/privesc
+cd $USER_HOME/dropzone
 
 print_status "Downloading privilege escalation scripts..."
 # URLs, versions and expected hashes now live in lib.sh's pin manifest, so the
 # same artifact cannot be fetched from two different URLs by two scripts.
-fetch_pinned linpeas          ~/dropzone/privesc/linpeas.sh
-fetch_pinned powerup          ~/dropzone/privesc/PowerUp.ps1
-fetch_pinned winpeas          ~/dropzone/privesc/winpeas.exe
-fetch_pinned privesc_ps1      ~/dropzone/privesc/privesc.ps1
-fetch_pinned privesccheck     ~/dropzone/privesc/PrivescCheck.ps1
-chmod +x ~/dropzone/privesc/linpeas.sh 2>/dev/null
+fetch_pinned linpeas          $USER_HOME/dropzone/privesc/linpeas.sh
+fetch_pinned powerup          $USER_HOME/dropzone/privesc/PowerUp.ps1
+fetch_pinned winpeas          $USER_HOME/dropzone/privesc/winpeas.exe
+fetch_pinned privesc_ps1      $USER_HOME/dropzone/privesc/privesc.ps1
+fetch_pinned privesccheck     $USER_HOME/dropzone/privesc/PrivescCheck.ps1
+chmod +x $USER_HOME/dropzone/privesc/linpeas.sh 2>/dev/null
 fin_msg 'Privesc Scripts'
 
 print_status "Downloading pspy64..."
-if fetch_pinned pspy64 ~/dropzone/pspy64; then
-    chmod +x ~/dropzone/pspy64
+if fetch_pinned pspy64 $USER_HOME/dropzone/pspy64; then
+    chmod +x $USER_HOME/dropzone/pspy64
     fin_msg 'pspy64'
 fi
 
 print_status "Downloading username-anarchy..."
-if fetch_pinned username_anarchy ~/dropzone/username-anarchy; then
-    chmod +x ~/dropzone/username-anarchy
+if fetch_pinned username_anarchy $USER_HOME/dropzone/username-anarchy; then
+    chmod +x $USER_HOME/dropzone/username-anarchy
 fi
 
 print_status "Downloading upshell (TTY upgrade helper)..."
 if [ -f /usr/local/bin/upshell ]; then
     print_success "upshell already installed (skip)"
-elif fetch_pinned upshell ~/dropzone/upshell; then
-    sudo cp ~/dropzone/upshell /usr/local/bin/upshell && sudo chmod +x /usr/local/bin/upshell
+elif fetch_pinned upshell $USER_HOME/dropzone/upshell; then
+    sudo cp $USER_HOME/dropzone/upshell /usr/local/bin/upshell && sudo chmod +x /usr/local/bin/upshell
     print_success "upshell installed to /usr/local/bin/upshell"
     fin_msg 'upshell'
 fi
@@ -308,14 +375,14 @@ print_status "Downloading chisel..."
 # tarball - the old .tar.gz URL 404'd, so chisel never installed. Gunzip, don't untar.
 if command -v chisel &>/dev/null; then
     print_success "chisel already installed: $(chisel --version 2>&1)"
-elif fetch_pinned chisel ~/dropzone/chisel.gz && \
-     gunzip -f ~/dropzone/chisel.gz && chmod +x ~/dropzone/chisel && \
-     sudo mv ~/dropzone/chisel /usr/local/bin/chisel; then
+elif fetch_pinned chisel $USER_HOME/dropzone/chisel.gz && \
+     gunzip -f $USER_HOME/dropzone/chisel.gz && chmod +x $USER_HOME/dropzone/chisel && \
+     sudo mv $USER_HOME/dropzone/chisel /usr/local/bin/chisel; then
     print_success "chisel installed: $(chisel --version 2>&1)"
     fin_msg 'chisel'
 else
     print_warning "chisel installation failed"
-    rm -f ~/dropzone/chisel.gz ~/dropzone/chisel
+    rm -f $USER_HOME/dropzone/chisel.gz $USER_HOME/dropzone/chisel
 fi
 
 
@@ -326,6 +393,41 @@ pip_ensure principalmapper principalmapper
 pip_ensure minikerberos minikerberos
 pip_ensure pypykatz pypykatz
 fin_msg 'Cloud Security Tools'
+
+# --- Azure / Entra ID ------------------------------------------------------
+# Everything above this point is AWS-ONLY (awscli, pacu, ScoutSuite, pmapper).
+# That is a real hole: CPTC's own infrastructure is an Entra/M365 tenant, the
+# deliverables live in M365, and the CPTC 12 client was identified THROUGH its
+# Azure tenant. If the in-scope cloud turns out to be Azure we previously had
+# nothing at all.
+#
+# azure-cli is in Kali's own repo (2.90.0-1), so no Microsoft apt repo, no GPG
+# key dance, and no lsb_release workaround. It is ~175 MB with dependencies -
+# the single heaviest default-on addition, and roughly what removing zaproxy
+# gave back.
+print_status "Installing Azure / Entra ID tooling..."
+apt_install azure-cli
+pip_ensure roadtools roadrecon          # ROADtools - Entra ID recon (roadrecon)
+
+# AzureHound feeds the SAME BloodHound CE instance ad.sh installs, so Azure and
+# on-prem AD paths end up in one graph.
+if command -v azurehound &>/dev/null; then
+    print_success "azurehound already installed: $(azurehound --version 2>&1 | head -n1)"
+elif fetch_pinned azurehound $USER_HOME/dropzone/azurehound.zip; then
+    # Do not assume where inside the zip the binary sits - locate it. An upstream
+    # layout change would otherwise fail as a confusing "unpack failed".
+    if unzip -o -q $USER_HOME/dropzone/azurehound.zip -d $USER_HOME/dropzone/azurehound.d && \
+       AH_BIN=$(find $USER_HOME/dropzone/azurehound.d -type f -name azurehound | head -n1) && \
+       [ -n "$AH_BIN" ] && \
+       sudo install -m 0755 "$AH_BIN" /usr/local/bin/azurehound; then
+        print_success "azurehound installed: $(azurehound --version 2>&1 | head -n1)"
+        rm -rf $USER_HOME/dropzone/azurehound.zip $USER_HOME/dropzone/azurehound.d
+        fin_msg 'AzureHound'
+    else
+        print_warning "azurehound unpack failed - is 'unzip' installed?"
+    fi
+fi
+fin_msg 'Azure / Entra ID Tools'
 
 print_status "Setting up wordlists..."
 if [ ! -d "/usr/share/wordlists/kali-wordlists" ]; then
@@ -358,7 +460,9 @@ print_status "Installing Sublime Text..."
 if wget -qO - https://download.sublimetext.com/sublimehq-pub.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/sublimehq-archive.gpg > /dev/null && \
    echo "deb https://download.sublimetext.com/ apt/stable/" | sudo tee /etc/apt/sources.list.d/sublime-text.list > /dev/null && \
    sudo apt-get update -qq && \
-   sudo apt-get install -qq -y sublime-text; then
+   sudo env DEBIAN_FRONTEND=noninteractive apt-get install -qq -y \
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+        sublime-text; then
     subl_version=$(subl --version 2>&1)
     print_success "Sublime Text installed: $subl_version"
     fin_msg 'Sublime Text'
@@ -366,25 +470,38 @@ else
     print_warning "Sublime Text installation failed (non-critical)"
 fi
 
-print_status "Cloning nuclei templates..."
-cd ~/dropzone
-if clone_pinned nuclei-templates https://github.com/projectdiscovery/nuclei-templates.git \
-        "$HOME/dropzone/nuclei-templates"; then
-    templates_count=$(find "$HOME/dropzone/nuclei-templates" -name "*.yaml" | wc -l)
-    print_success "Nuclei templates: $templates_count templates"
-    fin_msg 'Nuclei Templates'
+# nuclei-templates is a FULL-HISTORY clone of a 731 MB repository - by a wide
+# margin the biggest git operation in this script. clone_pinned only passes
+# --depth 1 when it is given a tag, and this call has none.
+if [ "$WANT_ISMAEL" -eq 1 ]; then
+    print_status "Cloning nuclei templates (--ismael; ~731 MB)..."
+    cd $USER_HOME/dropzone
+    if clone_pinned nuclei-templates https://github.com/projectdiscovery/nuclei-templates.git \
+            "$USER_HOME/dropzone/nuclei-templates"; then
+        templates_count=$(find "$USER_HOME/dropzone/nuclei-templates" -name "*.yaml" | wc -l)
+        print_success "Nuclei templates: $templates_count templates"
+        fin_msg 'Nuclei Templates'
+    fi
+else
+    print_status "Skipping the nuclei-templates clone (~731 MB) - run with --ismael to get it."
+    print_warning "  nuclei itself IS installed. On first use it tries to download its own"
+    print_warning "  template set to ~/.local/nuclei-templates, which needs internet egress."
+    print_warning "  If the engagement network is isolated, that fetch will fail and nuclei"
+    print_warning "  will have no templates. Either run --ismael on one box and copy the"
+    print_warning "  directory across, or run 'nuclei -update-templates' while you still"
+    print_warning "  have egress."
 fi
 
 
 print_status "Cloning jwt_tool (JWT tampering/cracking)..."
-cd ~/dropzone
-clone_pinned jwt_tool https://github.com/ticarpi/jwt_tool.git "$HOME/dropzone/jwt_tool"
-if [ -d "$HOME/dropzone/jwt_tool" ]; then
-    chmod +x "$HOME/dropzone/jwt_tool/jwt_tool.py" 2>/dev/null
+cd $USER_HOME/dropzone
+clone_pinned jwt_tool https://github.com/ticarpi/jwt_tool.git "$USER_HOME/dropzone/jwt_tool"
+if [ -d "$USER_HOME/dropzone/jwt_tool" ]; then
+    chmod +x "$USER_HOME/dropzone/jwt_tool/jwt_tool.py" 2>/dev/null
     # requirements.txt is the source of truth for deps; if upstream ever moves it,
     # fall back to the ones the README names. requests is already in from start.sh.
-    if [ -f "$HOME/dropzone/jwt_tool/requirements.txt" ]; then
-        if pip install -r "$HOME/dropzone/jwt_tool/requirements.txt" --break-system-packages; then
+    if [ -f "$USER_HOME/dropzone/jwt_tool/requirements.txt" ]; then
+        if pip install -r "$USER_HOME/dropzone/jwt_tool/requirements.txt" --break-system-packages; then
             print_success "jwt_tool dependencies installed"
         else
             print_warning "jwt_tool dependencies failed - it may not run"
@@ -399,8 +516,18 @@ if [ -d "$HOME/dropzone/jwt_tool" ]; then
     fin_msg 'jwt_tool'
 fi
 
+print_status "Downloading ysoserial (Java deserialisation gadget chains)..."
+# Not in Kali's repos - verified against the live index, unlike phpggc which is.
+# It is a fat jar, so it needs a JRE; openjdk-11-jdk is in the apt list above and
+# the verification block below proves 'java -version' actually runs.
+if fetch_pinned ysoserial $USER_HOME/dropzone/ysoserial-all.jar; then
+    print_status "Run it with: java -jar ~/dropzone/ysoserial-all.jar <gadget> '<cmd>'"
+    print_status "  List gadgets: java -jar ~/dropzone/ysoserial-all.jar"
+    fin_msg 'ysoserial'
+fi
+
 print_status "Installing additional useful Go tools..."
-export GOPATH=$HOME/go
+export GOPATH=$USER_HOME/go
 export PATH=$PATH:$GOPATH/bin
 
 # go_install lives in lib.sh. The module path no longer carries the @version -
@@ -409,6 +536,101 @@ go_install httprobe    github.com/tomnomnom/httprobe
 go_install waybackurls github.com/tomnomnom/waybackurls
 go_install subfinder   github.com/projectdiscovery/subfinder/v2/cmd/subfinder
 go_install httpx       github.com/projectdiscovery/httpx/cmd/httpx
+
+# ---------------------------------------------------------------------------
+# OT / ICS
+# ---------------------------------------------------------------------------
+# READ THE DOCTRINE BEFORE YOU RUN ANY OF THIS. See the KB, and osint/themepark-playbook.md.
+#
+# "Rides" at CPTC 11 (maritime) were web dashboards and raw TCP listeners - there
+# was not one industrial protocol in the whole environment. These three tools are
+# here for the case where CPTC 12 does ship real Modbus/OPC-UA, not because we
+# expect it.
+#
+# THE RULE: prove reachability READ-ONLY, then STOP and escalate in character.
+# modbuster can write coils and holding registers and opcattack can forge
+# signatures. Do not use those paths against anything ride-, safety- or
+# life-safety-shaped. Disrupting the environment is an explicit point loss and a
+# DQ risk, and "we could have stopped a ride mid-cycle and chose to report it
+# instead" is a stronger report line than a screenshot of having done it.
+print_status "Installing OT/ICS tooling (read-only doctrine - see comments)..."
+cd $USER_HOME/dropzone
+
+pip_ensure asyncua asyncua        # OPC-UA client library; also opcattack's dependency
+
+# icspacket is the broad-coverage one: DNP3 (IEEE 1815), MMS (ISO 9506) + IEC 61850,
+# IEC 60870-5-104, EtherNet/IP (CIP), BACnet/IP, plus Modbus and OPC-UA which it
+# layers on pymodbus and asyncua respectively. Ships prebuilt Linux wheels for
+# Python 3.10-3.14, so it should not need a compiler on Kali's 3.13.
+# It is a LIBRARY, not a CLI - you write a few lines of Python against it. That is
+# the right shape for the read-only doctrine above: a scripted read is easier to
+# keep harmless, and easier to put in the report, than an interactive attack tool.
+pip_ensure icspacket icspacket
+
+if clone_pinned opcattack https://github.com/bvcyber/opcattack "$USER_HOME/dropzone/opcattack"; then
+    if [ -f "$USER_HOME/dropzone/opcattack/requirements.txt" ]; then
+        pip install -r "$USER_HOME/dropzone/opcattack/requirements.txt" --break-system-packages \
+            && print_success "opcattack dependencies installed" \
+            || print_warning "opcattack dependencies failed - it may not run"
+    fi
+    chmod +x "$USER_HOME/dropzone/opcattack/opcattack.py" 2>/dev/null
+    print_status "Run it with: python3 ~/dropzone/opcattack/opcattack.py --help"
+    fin_msg 'opcattack'
+fi
+
+if command -v modbuster &>/dev/null; then
+    print_success "modbuster already installed"
+elif clone_pinned modbuster https://github.com/TacticalGator/modbuster "$USER_HOME/dropzone/modbuster"; then
+    # Upstream ships a pyproject and recommends pipx; fall back to pip so a box
+    # without pipx still ends up with the tool.
+    if command -v pipx &>/dev/null && pipx install "$USER_HOME/dropzone/modbuster" 2>/dev/null; then
+        print_success "modbuster installed via pipx"
+        fin_msg 'modbuster'
+    elif pip install "$USER_HOME/dropzone/modbuster" --break-system-packages; then
+        print_success "modbuster installed via pip"
+        fin_msg 'modbuster'
+    else
+        print_warning "modbuster install failed - run it from $USER_HOME/dropzone/modbuster instead"
+    fi
+fi
+fin_msg 'OT/ICS Tools'
+
+# ---------------------------------------------------------------------------
+# MOBILE  (--ismael only)
+# ---------------------------------------------------------------------------
+# Per the KB this is a TIME-BOXED HEDGE, not a discipline: there is no evidence
+# mobile has ever been in scope, and the useful flow is ~90 minutes of
+# apktool -> jadx -> grep -> hand the endpoint list to the web team.
+if [ "$WANT_ISMAEL" -eq 1 ]; then
+    print_status "Installing mobile tooling (--ismael)..."
+    # jadx pulls default-jre and is ~69 MB; the other three are under 1 MB together.
+    apt_install jadx adb apktool openssl
+    pip_ensure frida frida-tools
+
+    # Android Studio: 1.5 GB download, ~4 GB installed - the single largest item in
+    # this repo. Its EMULATOR needs nested virtualisation, which a VDI almost
+    # certainly does not expose, so treat this as an APK/layout inspector rather
+    # than assuming you can run an app on it.
+    if [ -d /opt/android-studio ]; then
+        print_success "Android Studio already installed at /opt/android-studio (skip)"
+    else
+        print_warning "Android Studio is a 1.5 GB download and ~4 GB on disk. Fetching..."
+        if fetch_pinned android_studio $USER_HOME/dropzone/android-studio.tar.gz; then
+            if sudo tar -xzf $USER_HOME/dropzone/android-studio.tar.gz -C /opt; then
+                sudo ln -sf /opt/android-studio/bin/studio.sh /usr/local/bin/android-studio
+                print_success "Android Studio installed -> run: android-studio"
+                # Reclaim the 1.5 GB immediately; /opt/android-studio is the skip test.
+                rm -f $USER_HOME/dropzone/android-studio.tar.gz
+                fin_msg 'Android Studio'
+            else
+                print_warning "Android Studio extraction failed - is there enough disk?"
+            fi
+        fi
+    fi
+    fin_msg 'Mobile Tools'
+else
+    print_status "Skipping the mobile kit - run with --ismael for jadx/apktool/adb/frida + Android Studio."
+fi
 
 print_status "Verifying screenshot tools..."
 if command -v flameshot &> /dev/null; then
@@ -586,12 +808,29 @@ print_status "Checking web tools..."
 check_tool "nikto"      "nikto -Version"        "nikto"
 check_tool "nuclei"     "nuclei -version"       "nuclei"
 check_tool "whatweb"    "whatweb --version"     "whatweb"
-# Burp is a GUI launcher - running it would open a window, so check the package
-# state instead, plus the JRE it needs. This is also the live answer to the
-# open 'is openjdk-11-jdk still a real package' question: if java runs, Burp is fine.
-check_tool "burpsuite"  "dpkg -s burpsuite"     "install ok installed"
+# Burp: no longer an apt package, so 'dpkg -s' is the wrong question. These four
+# checks each catch a different real failure:
+#  1. the jar exists AND is a jar (a captive portal returns HTML with a 200);
+#  2. 'burpsuite --version' RUNS - which is the only thing that proves the JVM is
+#     new enough. Burp needs Java 21 and Kali also ships openjdk-11; on 17 it dies
+#     with "UnsupportedClassVersionError ... class file version 65.0", so this is
+#     the check that would have caught shipping only openjdk-11-jdk;
+#  3. a JVM of at least 21 is actually present for the wrapper to find;
+#  4. the version file, so the summary records WHICH Burp this box has.
+check_payload "$BURP_DIR/burpsuite.jar" "Burp jar" '^PK' 100000000
+check_cmd  "burpsuite runs (JVM >= 21)" \
+           "timeout 180 burpsuite --version 2>&1 | head -5" "burp|version"
+check_cmd  "a JVM >= 21 is installed" \
+           "for j in \$(ls -d /usr/lib/jvm/*/bin/java 2>/dev/null | sort -rV); do v=\$(\$j -version 2>&1 | sed -n 's/.*version \"\\([0-9][0-9]*\\).*/\\1/p' | head -1); [ -n \"\$v\" ] && [ \"\$v\" -ge 21 ] 2>/dev/null && echo \"found \$v\" && break; done" \
+           "found"
+check_file "$BURP_DIR/VERSION" "Burp version record ($(cat "$BURP_DIR/VERSION" 2>/dev/null || echo 'unknown'))"
 check_tool "java"       "java -version"         "version"
-check_cmd  "jwt_tool"   "python3 $HOME/dropzone/jwt_tool/jwt_tool.py --help" "jwt|usage"
+check_cmd  "jwt_tool"   "python3 $USER_HOME/dropzone/jwt_tool/jwt_tool.py --help" "jwt|usage"
+check_tool "arjun"      "arjun --help"          "arjun|usage"
+check_tool "phpggc"     "phpggc -l"             "gadget|chain|[0-9]"
+# A fat jar is only proven by running it: 'java -jar <jar>' with no arguments
+# prints the gadget list, which also re-proves the JRE.
+check_cmd  "ysoserial"  "java -jar $USER_HOME/dropzone/ysoserial-all.jar 2>&1 | head -40" "gadget|usage|payload"
 
 print_status "Checking network tools..."
 check_tool "chisel"       "chisel --version"    "[0-9]"
@@ -632,21 +871,48 @@ check_tool "scrot"     "scrot --version"     "scrot"
 check_tool "maim"      "maim --version"      "[0-9]"
 
 print_status "Checking privilege escalation scripts..."
-check_script  "$HOME/dropzone/privesc/linpeas.sh" "linpeas.sh"
-check_payload "$HOME/dropzone/privesc/winpeas.exe"      "winpeas.exe"      "^MZ"                 100000
-check_payload "$HOME/dropzone/pspy64"                   "pspy64"           "ELF"                 1000000
-check_payload "$HOME/dropzone/privesc/PowerUp.ps1"      "PowerUp.ps1"      "function|param"      10000
-check_payload "$HOME/dropzone/privesc/PrivescCheck.ps1" "PrivescCheck.ps1" "function|param"      10000
-check_payload "$HOME/dropzone/privesc/privesc.ps1"      "privesc.ps1"      "function|param|write" 5000
-check_payload "$HOME/dropzone/username-anarchy"         "username-anarchy" "ruby|#!"              5000
+check_script  "$USER_HOME/dropzone/privesc/linpeas.sh" "linpeas.sh"
+check_payload "$USER_HOME/dropzone/privesc/winpeas.exe"      "winpeas.exe"      "^MZ"                 100000
+check_payload "$USER_HOME/dropzone/pspy64"                   "pspy64"           "ELF"                 1000000
+check_payload "$USER_HOME/dropzone/privesc/PowerUp.ps1"      "PowerUp.ps1"      "function|param"      10000
+check_payload "$USER_HOME/dropzone/privesc/PrivescCheck.ps1" "PrivescCheck.ps1" "function|param"      10000
+check_payload "$USER_HOME/dropzone/privesc/privesc.ps1"      "privesc.ps1"      "function|param|write" 5000
+check_payload "$USER_HOME/dropzone/username-anarchy"         "username-anarchy" "ruby|#!"              5000
 check_script  "/usr/local/bin/upshell" "upshell"
 
 print_status "Checking cloned repos..."
-check_file "$HOME/dropzone/nuclei-templates" "nuclei-templates"
+if [ "$WANT_ISMAEL" -eq 1 ]; then
+    check_file "$USER_HOME/dropzone/nuclei-templates" "nuclei-templates"
+fi
 
 print_status "Checking wordlists..."
 check_payload "/usr/share/wordlists/rockyou.txt" "rockyou.txt" "." 50000000
 check_file    "/usr/share/seclists" "SecLists"
+
+print_status "Checking cloud tooling..."
+check_tool "aws"        "aws --version"         "aws-cli"
+check_tool "az"         "az version"            "azure-cli|[0-9]+\\.[0-9]"
+check_tool "azurehound" "azurehound --version"  "azurehound|v?[0-9]+\\.[0-9]"
+check_tool "roadrecon"  "roadrecon --help"      "roadrecon|usage"
+check_pymod roadtools "ROADtools (roadlib)"
+
+print_status "Checking OT/ICS tooling..."
+check_pymod asyncua "asyncua (OPC-UA)"
+check_pymod icspacket "icspacket (DNP3/MMS/IEC-104/CIP/BACnet)"
+check_cmd  "opcattack" "python3 $USER_HOME/dropzone/opcattack/opcattack.py --help" "usage|opcattack|error"
+check_tool "modbuster" "modbuster --help"       "modbus|usage"
+
+if [ "$WANT_ISMAEL" -eq 1 ]; then
+    print_status "Checking mobile tooling (--ismael)..."
+    check_tool "jadx"    "jadx --version"    "[0-9]+\\.[0-9]"
+    check_tool "apktool" "apktool --version" "[0-9]+\\.[0-9]"
+    check_tool "adb"     "adb version"       "android debug bridge|[0-9]+\\.[0-9]"
+    check_tool "frida"   "frida --version"   "[0-9]+\\.[0-9]"
+    check_file "/opt/android-studio" "Android Studio"
+fi
+
+print_status "Checking shell helpers..."
+check_tool "rlwrap" "rlwrap --version" "rlwrap"
 
 print_status "Checking Python packages..."
 check_pymod requests "requests"
@@ -682,6 +948,9 @@ if [ ${#APT_FAILED[@]} -gt 0 ]; then
     print_warning "  Retry manually: sudo apt install ${APT_FAILED[*]}"
 fi
 
+# Last chance to hand back anything created while running as root.
+own_user "$USER_HOME/dropzone" "$USER_HOME/go" "$PINS_LOCK" 2>/dev/null
+
 pin_summary
 
 echo ""
@@ -689,6 +958,10 @@ echo -e "${YELLOW}╔═══════════════════�
 echo -e "${YELLOW}║   NEXT STEP                                           ║${NC}"
 echo -e "${YELLOW}╚═══════════════════════════════════════════════════════╝${NC}"
 print_status "AD team: run ./ad.sh next - it will remind you to log out when done."
+if [ "$WANT_ISMAEL" -eq 0 ]; then
+    print_status "Mobile/AI owner: this run SKIPPED the mobile kit and nuclei-templates."
+    print_status "  Get them with: bash all.sh --ismael   (adds ~2.3 GB of downloads)"
+fi
 print_status "Everyone else: LOG OUT AND BACK IN (or reboot) now to activate:"
 print_warning "  - command logging      (new shells load the ~/.zshrc / ~/.bashrc hooks)"
 print_warning "  - uniform terminal look (applies to new terminal windows)"

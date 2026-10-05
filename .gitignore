@@ -4,3 +4,6 @@ token.txt
 jVision/data/*.bak
 jVision/data/*.bak-*
 jVision/data/*.pre-reset*
+
+# pins.sh --write keeps a timestamped backup of lib.sh; local only
+lib.sh.pins-bak-*

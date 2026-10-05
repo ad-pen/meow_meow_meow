@@ -19,8 +19,29 @@ set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-PID_FILE="$HOME/.jvis_logsync.pid"
-LOG_FILE="$HOME/.jvis_logsync.log"
+# Sudo-safe home, same approach as lib.sh/start.sh: the readable logs this daemon
+# tails live in the OPERATOR's home, so if this is ever launched under sudo we must
+# not go looking in /root for them. Derived from the script's own path.
+cptc_user_home() {
+    local dir u home
+    dir="$SCRIPT_DIR"
+    if [[ $dir =~ ^/home/([^/]+)(/|$) ]]; then
+        u="${BASH_REMATCH[1]}"
+        home=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+        if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
+        if [ -d "/home/$u" ]; then printf '%s\n' "/home/$u"; return 0; fi
+    fi
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+        home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+        if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
+    fi
+    printf '%s\n' "$HOME"
+}
+USER_HOME="${USER_HOME:-$(cptc_user_home)}"
+export USER_HOME          # jvis_logsync.py reads this too
+
+PID_FILE="$USER_HOME/.jvis_logsync.pid"
+LOG_FILE="$USER_HOME/.jvis_logsync.log"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
@@ -32,9 +53,9 @@ find_script() {
     fi
     for p in \
         "$SCRIPT_DIR/jvis_logsync.py" \
-        "$HOME/cptc/jvesion/Princess-Sumaya-University-for-Technology/jVision/jvis_logsync.py" \
-        "$HOME/jVision/jvis_logsync.py" \
-        "$HOME/cptc/jVision/jvis_logsync.py" \
+        "$USER_HOME/cptc/jvesion/Princess-Sumaya-University-for-Technology/jVision/jvis_logsync.py" \
+        "$USER_HOME/jVision/jvis_logsync.py" \
+        "$USER_HOME/cptc/jVision/jvis_logsync.py" \
         "/opt/jVision/jvis_logsync.py"; do
         [ -f "$p" ] && { echo "$p"; return 0; }
     done

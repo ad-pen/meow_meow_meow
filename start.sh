@@ -9,11 +9,61 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-LOG_FILE="$HOME/start_install.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
 # Resolve our own location so we can call sibling scripts regardless of cwd.
+# This has to come BEFORE the log file is opened: the home resolver below is what
+# decides where the log goes, and under sudo that is not $HOME.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ---------------------------------------------------------------------------
+# WHOSE HOME IS IT?  - duplicated from lib.sh ON PURPOSE
+# ---------------------------------------------------------------------------
+# start.sh deliberately does not source lib.sh: it is the FIRST thing that runs
+# on a bare box, so it must work before anything else in the repo is known-good.
+# Keep this in step with cptc_user_home() in lib.sh.
+#
+# Under `sudo bash start.sh`, $HOME is /root - so every dotfile this script's
+# helpers write (~/.zshrc, ~/.bashrc, ~/.config/qterminal) would land on root's
+# account and the real operator would get no command logging at all. The script
+# used to only WARN about that and ask whether to continue. Deriving the home
+# from the script's own path fixes it instead: an operator clones this repo into
+# their own home, so the path we are executing from names them.
+cptc_user_home() {
+    local dir u home
+    dir="$SCRIPT_DIR"
+    if [[ $dir =~ ^/home/([^/]+)(/|$) ]]; then
+        u="${BASH_REMATCH[1]}"
+        home=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
+        if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
+        if [ -d "/home/$u" ]; then printf '%s\n' "/home/$u"; return 0; fi
+    fi
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+        home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+        if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
+    fi
+    printf '%s\n' "$HOME"
+}
+USER_HOME="$(cptc_user_home)"
+CPTC_USER="$(stat -c %U "$USER_HOME" 2>/dev/null || id -un)"
+export USER_HOME CPTC_USER
+own_user() {
+    [ "$(id -u)" -eq 0 ] || return 0
+    [ -n "${CPTC_USER:-}" ] || return 0
+    chown -R "$CPTC_USER:" "$@" 2>/dev/null
+    return 0
+}
+
+# Every apt call below is non-interactive. DEBIAN_FRONTEND stops debconf asking
+# (docker.io's "Remove all Docker data?" is the one that bit us), and the two
+# Dpkg::Options stop dpkg asking keep-or-replace when a package ships a changed
+# config file. Without both, an install can block forever on a box nobody is
+# watching. apt_install in lib.sh does the same thing for all.sh/ad.sh.
+export DEBIAN_FRONTEND=noninteractive
+APT_NI=(sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+
+LOG_FILE="$USER_HOME/start_install.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+own_user "$LOG_FILE"
 
 print_status() {
     echo -e "${BLUE}[*]${NC} $1"
@@ -46,23 +96,15 @@ echo "║     Starting basic tool installation...               ║"
 echo "╚═══════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
-# The logging/terminal scripts edit the invoking user's dotfiles (~/.zshrc,
-# ~/.bashrc, ~/.config/qterminal). If run under sudo, $HOME is /root and those
-# land on the wrong account. Run start.sh as the normal user; it sudos as needed.
+# The logging/terminal scripts edit the OPERATOR's dotfiles, not root's. That used
+# to make running under sudo dangerous enough to stop and ask about; it no longer
+# is, because $USER_HOME above is resolved from this script's path rather than
+# from $HOME, so a sudo run still configures the right account. Report the
+# situation and carry on - nothing here needs a human to answer.
 if [ "$(id -u)" -eq 0 ]; then
-    print_warning "Running as root: per-user logging/terminal config would apply to /root, not your user."
-    print_warning "Recommended: run this as your normal user (it will prompt for sudo itself)."
-    # Only prompt when a real terminal is attached. stdout is already piped through
-    # tee (line 13), so on a non-interactive run the prompt text never renders and
-    # the script looks like it froze before aborting. Refusing to continue as root
-    # without a TTY is the correct default here - just say why.
-    if [ -t 0 ]; then
-        read -p "Continue as root anyway? (y/N): " -n 1 -r; echo
-    else
-        print_error "No TTY attached, so this cannot be confirmed interactively."
-        REPLY=n
-    fi
-    [[ $REPLY =~ ^[Yy]$ ]] || { print_error "Aborted. Re-run as the normal user."; exit 1; }
+    print_warning "Running as root. Installing for '$CPTC_USER' -> $USER_HOME"
+    print_warning "  (resolved from this script's path, not \$HOME, which is ${HOME:-unset})"
+    print_warning "  Files created here are chown'd back to $CPTC_USER."
 fi
 
 print_status "Checking sudo privileges..."
@@ -73,6 +115,14 @@ fi
 print_success "Sudo privileges confirmed"
 
 while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+
+# needrestart is the package that turns an otherwise silent apt install into an
+# interactive "which services should be restarted?" questionnaire. all.sh already
+# removes it, but start.sh runs FIRST and installs the desktop, so it has to go
+# here or the very first big install is the one that blocks.
+print_status "Removing needrestart to avoid interactive prompts..."
+sudo env DEBIAN_FRONTEND=noninteractive apt-get remove -y needrestart 2>/dev/null \
+    || print_warning "needrestart not installed (ok)"
 
 print_status "Updating package lists..."
 if sudo apt update; then
@@ -89,7 +139,7 @@ fi
 # fails with "Could not get lock" until that phase ends. all.sh still lists both
 # packages; its apt_install does a dpkg -s check first, so they are a no-op there.
 print_status "Installing basic packages (python3, pip, nmap, docker)..."
-if sudo apt install -y \
+if "${APT_NI[@]}" \
     python3 \
     python3-pip \
     python3-venv \
@@ -169,7 +219,7 @@ fi
 print_status "Checking for desktop environment..."
 if ! dpkg -l | grep -q kali-desktop-xfce; then
     print_status "Installing XFCE desktop and xRDP (this may take a while)..."
-    if sudo apt install -y kali-desktop-xfce xorg xrdp; then
+    if "${APT_NI[@]}" kali-desktop-xfce xorg xrdp; then
         sudo systemctl enable xrdp --now
         sudo systemctl start xrdp
         print_success "Desktop environment installed and xRDP configured"
@@ -188,6 +238,8 @@ else
     print_warning "If it flagged old logging lines, remove them from ~/.zshrc and re-run command_logging.sh"
 fi
 
+own_user "$USER_HOME/.zshrc" "$USER_HOME/.bashrc" "$USER_HOME/.zsh_history_readable" 2>/dev/null
+
 print_status "Applying uniform terminal appearance..."
 if bash "$SCRIPT_DIR/terminal_uniform.sh"; then
     print_success "Terminal uniform applied (open a fresh qterminal to see it)"
@@ -195,12 +247,12 @@ else
     print_warning "Terminal uniform setup reported an issue (non-critical) - see output above"
 fi
 
-print_status "Configuring Burp Suite HTTP logging..."
-if bash "$SCRIPT_DIR/burp_logging.sh"; then
-    print_success "Burp logging configured (readable log: ~/.burp_history_readable)"
-else
-    print_warning "Burp logging setup reported an issue (non-critical) - see output above"
-fi
+# NOTE: Burp Suite and its logging extension are NOT configured here any more -
+# both moved to all.sh, in that order. burp_logging.sh patches Burp's
+# UserConfig*.json so the extension auto-loads, and that file does not exist until
+# Burp has been installed and run once. Doing it here, before all.sh installed
+# Burp, meant the extension was staged but never registered: the operator started
+# Burp, saw no "CPTC Engagement Logger", and nothing explained why.
 
 echo -e "\n${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
@@ -221,8 +273,8 @@ echo -e "${YELLOW}==============================================================
 
 echo
 echo -e "${BLUE}[1] Activate command logging${NC} (adds preexec hook to your shell)"
-echo "    source ~/.zshrc     # or: source ~/.bashrc, or open a fresh shell"
-echo "    New commands land in ~/.zsh_history_readable with timestamps + exit codes."
+echo "    source $USER_HOME/.zshrc   # or ~/.bashrc, or just open a fresh shell"
+echo "    New commands land in $USER_HOME/.zsh_history_readable (timestamps + exit codes)."
 
 echo
 echo -e "${BLUE}[2] See the uniform terminal look${NC}"
@@ -230,33 +282,37 @@ echo "    Open a NEW qterminal or xfce4-terminal window."
 echo "    Windows opened before terminal_uniform.sh ran still show the old look."
 
 echo
-echo -e "${BLUE}[3] Verify Burp Suite auto-loads the CPTC Engagement Logger${NC}"
-echo "    Start Burp -> Extensions tab should show 'CPTC Engagement Logger'."
-echo "    Verify it works: hit Repeater once, then:"
-echo "        tail -f ~/.burp_history_readable"
-echo "    If it did NOT auto-load, see the manual instructions printed by"
-echo "    burp_logging.sh above."
-
-echo
-echo -e "${BLUE}[4] Install the full tool suite${NC} (heavy; run once per box)"
+echo -e "${BLUE}[3] Install the full tool suite${NC} (heavy; run once per box)"
 echo "    bash \"$SCRIPT_DIR/all.sh\""
-echo "    Do steps [1]-[3] FIRST: all.sh re-checks them and asks before proceeding."
-echo "    Docker is already installed, so [6] can run in a SECOND terminal while"
+echo "    Mobile/AI owner only:  bash \"$SCRIPT_DIR/all.sh\" --ismael"
+echo "        adds the mobile kit + Android Studio + the nuclei-templates clone"
+echo "        (~2.3 GB extra). Everyone else does NOT need it."
+echo "    all.sh installs BURP and then wires in the logging extension, so Burp"
+echo "    is NOT set up yet at this point - that is expected."
+echo "    It re-checks steps [1]-[2], REPORTS anything missing, and continues"
+echo "    without asking. Nothing in this build waits for an answer."
+echo "    Docker is already installed, so [5] can run in a SECOND terminal while"
 echo "    this one is still churning through all.sh."
 
 echo
-echo -e "${BLUE}[5] AD-side tools${NC} (run before AD work)"
+echo -e "${BLUE}[3a] After all.sh: verify Burp auto-loads the CPTC Engagement Logger${NC}"
+echo "    burpsuite        # launcher installed by all.sh (picks a JVM >= 21)"
+echo "    Extensions tab should show 'CPTC Engagement Logger'."
+echo "    Hit Repeater once, then:  tail -f $USER_HOME/.burp_history_readable"
+
+echo
+echo -e "${BLUE}[4] AD-side tools${NC} (run before AD work)"
 echo "    bash \"$SCRIPT_DIR/ad.sh\""
 
 echo
-echo -e "${BLUE}[6] Bring up the jVision server${NC} (safe to run alongside all.sh)"
+echo -e "${BLUE}[5] Bring up the jVision server${NC} (safe to run alongside all.sh)"
 echo "    cd \"$SCRIPT_DIR/jVision\" && sudo docker-compose up -d --build"
 echo "    Serves on port 7777. Drop the 'sudo' once you have re-logged in."
 echo "    Check it:  sudo docker-compose ps   |   logs: sudo docker-compose logs -f"
 echo "    ('docker compose' with a space also works if the CLI plugin is registered.)"
 
 echo
-echo -e "${BLUE}[7] AT ENGAGEMENT START -- push your logs to jVision${NC}"
+echo -e "${BLUE}[6] AT ENGAGEMENT START -- push your logs to jVision${NC}"
 echo "    bash \"$SCRIPT_DIR/jvis_logsync.sh\" start -i <jvision-ip> -u <jvis-user>"
 echo "    Control commands:"
 echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" status"
@@ -265,7 +321,7 @@ echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" stop"
 echo "    (Prompts for your jVision password; JVIS_PASS env var also works.)"
 
 echo
-echo -e "${BLUE}[8] Run scans via the jVision client${NC} (from the jVision repo)"
+echo -e "${BLUE}[7] Run scans via the jVision client${NC} (from the jVision repo)"
 echo "    sudo python3 jvisionclient.py -i <jvision-ip> -p 7777 -s <target-subnet>"
 echo "        -n         only run the heavy scan (skip the fast pass)"
 echo "        -u         also run UDP top-50 (SNMP/DNS/NetBIOS etc.)"
