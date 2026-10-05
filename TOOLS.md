@@ -88,7 +88,7 @@ across, or run `nuclei -update-templates` while egress still exists.
 | `nikto` | A | |
 | `whatweb` | A | |
 | `sslscan` | A | TLS/cipher review |
-| `cyberchef` | A | local, offline — safe for client data |
+| `cyberchef` | A | **`file://`, no server — deliberately.** `/usr/bin/cyberchef` is `cd /usr/lib/cyberchef && xdg-open index.html`; nothing listens. Do **not** "fix" this by adding a localhost server: no port means nothing reachable from the engagement network and nothing to explain under §4.2. Verified 2026-10-05 on Kali 2026.2 (11.3.0-0kali1), because Kali ships the multi-file *web* build rather than upstream's single-file standalone: the page renders byte-identically from `file://` and `http://127.0.0.1` (501,184 B DOM, op list populated), and the 37 MB of lazy-loaded `modules/` load by **webpack script injection**, which `file://` permits (only `fetch()` is blocked, and chunks don't use it). So the silent failure mode — UI loads, operation does nothing — does not occur |
 | `httpx` | A | Go → `~/go/bin` |
 | `httprobe` | A | Go → `~/go/bin` |
 | `subfinder` | A | Go → `~/go/bin` |
