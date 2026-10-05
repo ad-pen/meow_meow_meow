@@ -447,6 +447,38 @@ Two notes worth keeping:
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--mobile`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (tenth pass): run 4 — 115 passed, 0 warnings, 0 failed** in the
+  verification pass. `start.sh` 12m38s, `all.sh` 36m51s, both exit 0, umask 0007. Every fix
+  from runs 1–3 confirmed green: `httpx`/`subfinder`/`httprobe`/`waybackurls` all verified
+  by absolute GOPATH path, `opcattack dependencies installed (pins relaxed)` +
+  `keepalive module present` + `opcattack verified` (honestly this time),
+  `libreoffice-writer installed` + `soffice verified`, `Burp jar verified (684704951 bytes)`,
+  and `~/go/bin` now `drwxr-xr-x` / `-rwxr-xr-x`.
+  It then found a **design flaw in the pin manifest**:
+  🔴 **A floating URL paired with a fixed sha256 is not a pin, it is a scheduled false
+  alarm.** The run reported
+  `[-] linpeas SHA256 MISMATCH - expected 795e315c... got 7454e8f3...` /
+  `Do NOT use this file until you know why.` on a perfectly good file — because
+  `PIN_URL[linpeas]` used `releases/latest/download/` and **PEASS-ng had cut a release
+  three hours earlier** (`20261003-ea9b2e92` → `20261005-c6b483d8`, published
+  2026-10-05T15:56:37Z). They ship every couple of days, so this would have fired
+  repeatedly. **Nine more entries had the same latent shape** — one more
+  `releases/latest/download` (`privesccheck`) and eight raw `master`/`main`/`refs/heads`
+  files. This matters beyond tidiness: a build that cries *possible supply-chain
+  compromise* on a routine upstream release teaches the team to ignore the one time it is
+  real.
+  All ten converted to a release tag or a full commit sha, so **zero floating `PIN_URL`
+  entries remain**. The eight raw files were re-fetched from their new immutable URLs and
+  hashed first: **all eight MATCHED the hash already in the manifest**, proving the content
+  never changed and the references were simply aimed at a moving target. `linpeas` and
+  `winpeas` are now pinned to the *same* PEASS-ng release for coherence;
+  `privesccheck`'s tagged bytes were identical to its `latest`, so only the URL moved.
+  **`bash pins.sh --verify` now passes on all 32 artifacts against live URLs**, including
+  the new SpecterOps `sharphound_legacy` and chisel v1.12.0 entries.
+  Also fixed: the summary printed `All critical tools verified!` while `linpeas` sat in the
+  untrusted list, because a pin mismatch happens in the **fetch** phase and never touches
+  `$FAIL`. Technically accurate, completely misleading, and the mismatch line had scrolled
+  past by then. The headline is now gated on `HASH_MISMATCH` as well.
 - ✅ **Closed 2026-10-05 (ninth pass): run 3 on the clean snapshot — 112 passed, 2 warnings,
   1 failed**, and the warnings were worth having. `start.sh` 3m06s, `all.sh` 31m45s, both
   exit 0, at umask 0007.

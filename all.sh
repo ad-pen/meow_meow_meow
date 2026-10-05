@@ -1665,8 +1665,16 @@ echo -e "${YELLOW}Warnings: $WARN${NC}"
 echo -e "${RED}Failed:  $FAIL${NC}"
 echo ""
 
-if [ $FAIL -eq 0 ]; then
+# The headline must account for HASH_MISMATCH too. Run 4 printed
+# "All critical tools verified!" while linpeas was sitting in the untrusted list,
+# because a pin mismatch happens during the FETCH phase and never touches $FAIL.
+# Technically accurate, completely misleading - and the mismatch line had already
+# scrolled past by then.
+if [ $FAIL -eq 0 ] && [ ${#HASH_MISMATCH[@]} -eq 0 ]; then
     print_success "All critical tools verified!"
+elif [ $FAIL -eq 0 ]; then
+    print_warning "Checks all passed, BUT ${#HASH_MISMATCH[@]} artifact(s) failed their sha256 pin"
+    print_warning "  (${HASH_MISMATCH[*]}) - see the pin summary below before trusting this box."
 else
     print_warning "$FAIL tools failed verification - check log file"
 fi

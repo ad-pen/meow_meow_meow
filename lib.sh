@@ -207,6 +207,28 @@ pip_ensure() {
 # Every third-party artifact we download, in one place, with the version we
 # intend and the sha256 we expect.
 #
+# EVERY URL HERE MUST BE IMMUTABLE. No `releases/latest/download`, no
+# `/master/`, no `/main/`, no `refs/heads/`. A floating URL paired with a fixed
+# sha256 is not a pin, it is a scheduled false alarm: run 4 reported
+#     [-] linpeas SHA256 MISMATCH - expected 795e315c... got 7454e8f3...
+#     [-]   Do NOT use this file until you know why.
+# on a perfectly good file, because PEASS-ng had cut a release THREE HOURS
+# earlier (20261003-ea9b2e92 -> 20261005-c6b483d8) and `latest` had moved under
+# us. They ship every couple of days. The same shape was latent on nine more
+# entries, eight of them raw `master` files.
+#
+# This matters beyond tidiness: a build that cries "possible supply-chain
+# compromise" on a routine upstream release teaches the team to ignore the one
+# time it is real. All ten were converted to a release tag or a full commit sha,
+# and all eight raw files were re-fetched from their immutable URL and hashed:
+# every one MATCHED the hash already in this file, so the content never changed -
+# the references were simply aimed at a moving target.
+#
+# Bumping is a deliberate, reviewed act: change the URL and the sha together,
+# then `bash pins.sh --verify <name>`. Do NOT make fetch_pinned chase latest -
+# "always newest" and a pin manifest are opposite goals (distro packages are the
+# tier that tracks current; see apt_install).
+#
 # THE PROBLEM THIS SOLVES: half of these used to be pinned (winpeas, pspy,
 # chisel, kerbrute, windapsearch) and half tracked 'latest' / 'master' / '@latest'.
 # That means two operators building on the same morning can end up with different
@@ -223,9 +245,9 @@ pip_ensure() {
 declare -A PIN_URL PIN_SHA PIN_VER
 
 # --- pinned by version already ---
-PIN_URL[winpeas]="https://github.com/peass-ng/PEASS-ng/releases/download/20261003-ea9b2e92/winPEASx64.exe"
+PIN_URL[winpeas]="https://github.com/peass-ng/PEASS-ng/releases/download/20261005-c6b483d8/winPEASx64.exe"
 # 2024-10-11 -> 2026-10-03, which is upstream's latest release. sha re-computed.
-PIN_VER[winpeas]="20261003-ea9b2e92"; PIN_SHA[winpeas]="9c52005326108b71b3ac7ce87e3b414ec7eab7d5a45bd2371b7d5c0464c71326"
+PIN_VER[winpeas]="20261005-c6b483d8"; PIN_SHA[winpeas]="41b6546a00c2a94b929380032f9fb7788a2a920fa7cc45473634a818dd1557a1"
 
 PIN_URL[pspy64]="https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64"
 PIN_VER[pspy64]="v1.2.1";             PIN_SHA[pspy64]="c93f29a5cc1347bdb90e14a12424e6469c8cfea9a20b800bc249755f0043a3bb"
@@ -250,25 +272,25 @@ PIN_VER[windapsearch]="v0.3.0";       PIN_SHA[windapsearch]="15abbc5e2422158d64b
 # org is peass-ng, not carlospolop. The old name still 302s today (both return
 # 206), so this was not broken - but it is a redirect we do not control, and
 # line 178 above already used peass-ng, so the two were inconsistent.
-PIN_URL[linpeas]="https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh"
-PIN_VER[linpeas]="latest";            PIN_SHA[linpeas]="795e315c42c58e27841e4ee2798a73a9309694f0454b34707299bb090e04b98d"
+PIN_URL[linpeas]="https://github.com/peass-ng/PEASS-ng/releases/download/20261005-c6b483d8/linpeas.sh"
+PIN_VER[linpeas]="20261005-c6b483d8"; PIN_SHA[linpeas]="7454e8f3fc817fdb7de0818ac7b80a05071ebf4194f7a6e13689985033593870"
 
 # powerup REMOVED 2026-10-05: PowerSploit archived 2021, no maintained fork, only
 # ever pinnable to an untagged master. winPEAS + PrivescCheck cover the same
 # ground and are pinned to real releases. powerview_ps1 from the same repo stays -
 # it has no replacement.
 
-PIN_URL[privesc_ps1]="https://raw.githubusercontent.com/enjoiz/Privesc/refs/heads/master/privesc.ps1"
-PIN_VER[privesc_ps1]="master";        PIN_SHA[privesc_ps1]="e61e343192305413e8275d0a9c75d76e0cf1d4beff1636846b6471718a6b94a6"
+PIN_URL[privesc_ps1]="https://raw.githubusercontent.com/enjoiz/Privesc/4e12265d23d11c96b73c66de13d678fc3b1be67d/privesc.ps1"
+PIN_VER[privesc_ps1]="4e12265d (2023-03-06)";        PIN_SHA[privesc_ps1]="e61e343192305413e8275d0a9c75d76e0cf1d4beff1636846b6471718a6b94a6"
 
-PIN_URL[privesccheck]="https://github.com/itm4n/PrivescCheck/releases/latest/download/PrivescCheck.ps1"
-PIN_VER[privesccheck]="latest";       PIN_SHA[privesccheck]="60eacd57fc869e36170cc3cf1bdbc5da7aacfd799be353cd9509336b783e8389"
+PIN_URL[privesccheck]="https://github.com/itm4n/PrivescCheck/releases/download/2026.09.30-1/PrivescCheck.ps1"
+PIN_VER[privesccheck]="2026.09.30-1";       PIN_SHA[privesccheck]="60eacd57fc869e36170cc3cf1bdbc5da7aacfd799be353cd9509336b783e8389"
 
-PIN_URL[username_anarchy]="https://raw.githubusercontent.com/urbanadventurer/username-anarchy/refs/heads/master/username-anarchy"
-PIN_VER[username_anarchy]="master";   PIN_SHA[username_anarchy]="64832f9bcdb7a27d0928c7c52a8eda4a460f4e7065e607c96a3cbd09b8dafe36"
+PIN_URL[username_anarchy]="https://raw.githubusercontent.com/urbanadventurer/username-anarchy/e0631915ee90afb7ffcabf7900043927ef2f8934/username-anarchy"
+PIN_VER[username_anarchy]="e0631915 (2024-09-20)";   PIN_SHA[username_anarchy]="64832f9bcdb7a27d0928c7c52a8eda4a460f4e7065e607c96a3cbd09b8dafe36"
 
-PIN_URL[upshell]="https://raw.githubusercontent.com/brightio/penelope/main/extras/manual_tty_upgrade.sh"
-PIN_VER[upshell]="main";              PIN_SHA[upshell]="a8ec5a7b2b79c20d1a53c55da0966c311acb67fd9be689583e49f29cc48fcc7b"
+PIN_URL[upshell]="https://raw.githubusercontent.com/brightio/penelope/9f745d073e8b6e026f05d52c0f3e57dd9526d4f5/extras/manual_tty_upgrade.sh"
+PIN_VER[upshell]="9f745d07 (2026-06-10)";              PIN_SHA[upshell]="a8ec5a7b2b79c20d1a53c55da0966c311acb67fd9be689583e49f29cc48fcc7b"
 
 # --- added 2026-09-22 ------------------------------------------------------
 # ysoserial: Java deserialisation gadget chains. Needs a JRE - openjdk-11-jdk is
@@ -330,22 +352,22 @@ PIN_VER[adpeas]="v2.6.0";            PIN_SHA[adpeas]="24e6bb7b35e2f5baba6202ae41
 # PowerSploit is archived and was never tagged, so PowerView/PowerUp can only be
 # taken from master. Same class as the linpeas/powerup entries above: they are
 # fetched, recorded in pins.lock, and reported by pin_summary as unpinned.
-PIN_URL[powerview_ps1]="https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/Recon/PowerView.ps1"
-PIN_VER[powerview_ps1]="master";     PIN_SHA[powerview_ps1]="507e8666c239397561c58609f7ea569c9c49ddbb900cd260e7e42b02d03cfd87"
+PIN_URL[powerview_ps1]="https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/f94a5d298a1b4c5dfb1f30a246d9c73d13b22888/Recon/PowerView.ps1"
+PIN_VER[powerview_ps1]="f94a5d29 (2018-07-02)";     PIN_SHA[powerview_ps1]="507e8666c239397561c58609f7ea569c9c49ddbb900cd260e7e42b02d03cfd87"
 
 # Powermad writes the machine account that the RBCD chain needs. The old team's
 # notes/README.md RBCD walkthrough does not work without this file.
-PIN_URL[powermad]="https://raw.githubusercontent.com/Kevin-Robertson/Powermad/master/Powermad.ps1"
-PIN_VER[powermad]="master";          PIN_SHA[powermad]="3e0009375dafae4f4977c85be5f33ca3f1cd0903815053c0307cd32bd59abd49"
+PIN_URL[powermad]="https://raw.githubusercontent.com/Kevin-Robertson/Powermad/ba445a34f5bcfad149a439071179a2bbecab9e7a/Powermad.ps1"
+PIN_VER[powermad]="ba445a34 (2023-01-09)";          PIN_SHA[powermad]="3e0009375dafae4f4977c85be5f33ca3f1cd0903815053c0307cd32bd59abd49"
 
-PIN_URL[invoke_runascs]="https://raw.githubusercontent.com/antonioCoco/RunasCs/master/Invoke-RunasCs.ps1"
-PIN_VER[invoke_runascs]="master";    PIN_SHA[invoke_runascs]="69058ca0c4eada431047c0376db8a4728feffbacebbb9578e59f4c9113a342ca"
+PIN_URL[invoke_runascs]="https://raw.githubusercontent.com/antonioCoco/RunasCs/2764a2fb4b59936c12bbbba51a9ec81c67fe2e7d/Invoke-RunasCs.ps1"
+PIN_VER[invoke_runascs]="2764a2fb (2023-05-20)";    PIN_SHA[invoke_runascs]="69058ca0c4eada431047c0376db8a4728feffbacebbb9578e59f4c9113a342ca"
 
-PIN_URL[sessiongopher]="https://raw.githubusercontent.com/Arvanaghi/SessionGopher/master/SessionGopher.ps1"
-PIN_VER[sessiongopher]="master";     PIN_SHA[sessiongopher]="ddbf3299675ffdd7e3475f8a4848f3ab6cdff8819348c75b9ac4d8fb76569a2c"
+PIN_URL[sessiongopher]="https://raw.githubusercontent.com/Arvanaghi/SessionGopher/2d6f713be7ae0384a55ce7e0ea994ce3b87a651c/SessionGopher.ps1"
+PIN_VER[sessiongopher]="2d6f713b (2017-05-08)";     PIN_SHA[sessiongopher]="ddbf3299675ffdd7e3475f8a4848f3ab6cdff8819348c75b9ac4d8fb76569a2c"
 
-PIN_URL[invoke_psh_tcp]="https://raw.githubusercontent.com/samratashok/nishang/master/Shells/Invoke-PowerShellTcp.ps1"
-PIN_VER[invoke_psh_tcp]="master";    PIN_SHA[invoke_psh_tcp]="0f1e223eaf8b6d71f65960f8b9e14c98ba62e585334a6349bcd02216f4415868"
+PIN_URL[invoke_psh_tcp]="https://raw.githubusercontent.com/samratashok/nishang/d745bdb20a81efe1ba3c447538d552c2b73b0f64/Shells/Invoke-PowerShellTcp.ps1"
+PIN_VER[invoke_psh_tcp]="d745bdb2 (2017-12-18)";    PIN_SHA[invoke_psh_tcp]="0f1e223eaf8b6d71f65960f8b9e14c98ba62e585334a6349bcd02216f4415868"
 
 # --- Microsoft live-download URLs: unversioned BY DESIGN at the vendor end ----
 # download.sysinternals.com always serves "current". There is no version in the
