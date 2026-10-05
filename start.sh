@@ -58,8 +58,12 @@ own_user() {
 # config file. Without both, an install can block forever on a box nobody is
 # watching. apt_install in lib.sh does the same thing for all.sh/ad.sh.
 export DEBIAN_FRONTEND=noninteractive
+# DPkg::Lock::Timeout makes apt WAIT for the dpkg lock instead of failing
+# instantly - see the long note in lib.sh's apt_install, which was written after
+# five packages were silently lost to a few seconds of lock contention.
 APT_NI=(sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y
-        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+        -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
+        -o DPkg::Lock::Timeout=600)
 
 LOG_FILE="$USER_HOME/start_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -121,7 +125,7 @@ while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
 # removes it, but start.sh runs FIRST and installs the desktop, so it has to go
 # here or the very first big install is the one that blocks.
 print_status "Removing needrestart to avoid interactive prompts..."
-sudo env DEBIAN_FRONTEND=noninteractive apt-get remove -y needrestart 2>/dev/null \
+sudo env DEBIAN_FRONTEND=noninteractive apt-get remove -y -o DPkg::Lock::Timeout=600 needrestart 2>/dev/null \
     || print_warning "needrestart not installed (ok)"
 
 # Removing it once is not enough. needrestart is a RECOMMENDS of several packages
@@ -137,7 +141,7 @@ Pin-Priority: -1
 PIN
 
 print_status "Updating package lists..."
-if sudo apt update; then
+if sudo apt-get update -o DPkg::Lock::Timeout=600; then
     print_success "Package lists updated"
 else
     print_error "Failed to update package lists"
@@ -161,8 +165,11 @@ if "${APT_NI[@]}" \
     wget \
     docker.io \
     docker-compose \
+    python3-pwntools \
     build-essential \
-    cmake; then
+    cmake \
+    pkg-config \
+    ninja-build; then
     print_success "Basic packages installed"
 else
     print_error "Failed to install basic packages"
@@ -215,14 +222,33 @@ fi
 # library since Python 2.7; the PyPI package is a 2012 backport, and installing
 # it shadows the stdlib module with a decade-old one.
 #
-# Installed ONE AT A TIME on purpose. pip resolves the whole command as a single
-# transaction: on the test box pwntools' `unicorn` dependency failed to build and
-# took requests and bs4 down with it, because `error: failed-wheel-build-for-install`
-# aborts everything. Separate calls mean one bad wheel costs one package.
-print_status "Installing Python packages (requests, pwntools, beautifulsoup4)..."
+# pwntools NOW COMES FROM APT (python3-pwntools, in the list above), and this pip
+# block is only the fallback. Two clean-VM runs were needed to find out why:
+#   Run 1: pip pwntools died on  No such file or directory: 'cmake'
+#   Run 2: with cmake installed, it died FURTHER IN -
+#     src/qemu/util/osdep.c:66: error: implicit declaration of function 'mprotect'
+#     src/qemu/util/osdep.c:79: error: 'PROT_READ' undeclared
+#     gmake: *** [Makefile:146: all] Error 2
+# pwntools depends on `unicorn`, there is no cp314 wheel, so pip builds unicorn
+# 2.1.2 from source - and that bundled QEMU code does not compile against
+# glibc 2.43 / GCC 15.2 (both now current in Kali), because the newer headers no
+# longer pull in <sys/mman.h> transitively. It is not something we can patch.
+# Kali packages python3-pwntools 4.15.0-1 - the SAME version pip wanted - built
+# against the distro's own python3-unicorn 2.1.4. apt gets a working binary in
+# seconds; pip cannot get one at all. Compiling a QEMU fork on every box was
+# never the right plan for engagement morning anyway.
+#
+# Installed ONE AT A TIME, and skipped when the module already imports. pip
+# resolves a whole command as ONE transaction: in run 1 the unicorn build failure
+# took requests and bs4 with it, because `failed-wheel-build-for-install` aborts
+# everything. Separate calls mean one bad wheel costs one package.
+print_status "Installing Python packages (requests, beautifulsoup4; pwntools if apt missed it)..."
 PY_FAILED=()
-for pkg in requests pwntools beautifulsoup4; do
-    if python3 -m pip install "$pkg" --break-system-packages; then
+for spec in "requests:requests" "bs4:beautifulsoup4" "pwn:pwntools"; do
+    mod=${spec%%:*}; pkg=${spec#*:}
+    if python3 -c "import $mod" 2>/dev/null; then
+        print_success "  $pkg already present (skip)"
+    elif python3 -m pip install "$pkg" --break-system-packages; then
         print_success "  $pkg installed"
     else
         print_warning "  $pkg FAILED to install"

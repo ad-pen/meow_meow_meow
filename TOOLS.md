@@ -331,10 +331,10 @@ CPTC 12 ships real OT, not because it is expected.
 | Desktop | `kali-desktop-xfce`, `xorg`, `xrdp` | S | xRDP for Burp's GUI; **~2.2 GB, the heaviest thing in the build** |
 | Access | SSH service | S | enabled + started |
 | Runtime | `python3`, `python3-pip`, `python3-venv` | S + A | |
-| Runtime | `requests`, `pwntools`, `beautifulsoup4` | S | jVision client deps. Installed **one pip call each** — a single call aborts the whole transaction on one bad wheel, which is how a failed `unicorn` build took `requests` and `bs4` down with it on the clean-VM run. `argparse` was **removed**: stdlib since 2.7, and the PyPI package shadows it with a 2012 backport |
+| Runtime | `requests`, `beautifulsoup4` (pip) · **`python3-pwntools` (apt)** | S | jVision client deps. Installed **one pip call each** — a single call aborts the whole transaction on one bad wheel, which is how a failed `unicorn` build took `requests` and `bs4` down with it on the clean-VM run. `argparse` was **removed**: stdlib since 2.7, and the PyPI package shadows it with a 2012 backport |
 | Runtime | `golang` | A | builds the 4 Go tools |
 | Runtime | `openjdk-11-jdk` | A | ✅ **verified present in Kali** (11.0.31+11-1). Needed by Burp and `ysoserial` |
-| Build | `build-essential`, `python3-dev`, `libffi-dev`, `cmake` | S+D | lets `aardwolf` compile. `cmake` + `build-essential` are also in `start.sh`: `pwntools` pulls `unicorn`, which builds C extensions and fails with `No such file or directory: 'cmake'` on a stock Kali image |
+| Build | `build-essential`, `python3-dev`, `libffi-dev`, `cmake`, `ninja-build`, `pkg-config` | S+D | lets `aardwolf` compile. `cmake` + `build-essential` are also in `start.sh`: `pwntools` pulls `unicorn`, which builds C extensions and fails with `No such file or directory: 'cmake'` on a stock Kali image |
 | Build | `mono-complete`, `mono-devel` | D | conditional, for SharpEfsPotato |
 | Build | `apt-transport-https`, `libssl-dev` | A | |
 | Base | `git`, `curl`, `wget`, `unzip` | S + A | `unzip` unpacks the AzureHound release |
@@ -402,7 +402,7 @@ Two notes worth keeping:
 ## Counts
 
 65 apt in `all.sh` main list + 8 reporting + `azure-cli` + Sublime · 4 more under `--ismael` ·
-**20** apt in `ad.sh` (+2 mono) · 14 apt in `start.sh` ·
+**20** apt in `ad.sh` (+2 mono) · 17 apt in `start.sh` ·
 8 pip (A) + 1 pip (I) + 4 pip (D) · 4 Go ·
 **33 pin-manifest artifacts** (all hash-verified) · **21 `fetch_pinned` + 12 `clone_pinned` in `ad.sh`** ·
 3 pinned artifacts in `windows.ps1` + 6 choco packages.
@@ -447,6 +447,67 @@ Two notes worth keeping:
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--ismael`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (seventh pass): `start.sh` → `all.sh` run end to end on the
+  `clean-kali` VirtualBox snapshot**, driven by `VBoxManage guestcontrol`. Result **105
+  passed / 3 warnings / 8 failed**. Two of the previous pass's fixes were confirmed
+  working on a real box — `PrivescCheck.ps1 verified by pinned sha256 (946473 bytes)` and
+  `python: icspacket built from source (v0.3.1)` + `icspacket … verified` — and three new
+  defects came out, one of them nasty.
+  1. 🔴 **`fetch_pinned` hashed sudo-downloaded files WITHOUT sudo, and reported the
+     resulting empty hash as tampering.** The session umask was `0007`, so
+     `$pre curl -o` wrote `/usr/local/bin/kerbrute` as `-rw-r----- root root`. The next
+     line was a bare `sha256sum "$dest"`, which got `Permission denied` and an **empty**
+     hash; empty ≠ the pin, so the build announced:
+     `[-] kerbrute SHA256 MISMATCH - expected 710a9d2653c8bd36... got ...` /
+     `[-] Do NOT use this file until you know why.`
+     **The file was byte-perfect.** The script said "this artifact may have been tampered
+     with" — the most alarming thing it can say — because it could not open it. And
+     because `fetch_pinned` returned 1, the `&& sudo chmod +x` in the caller
+     short-circuited, so `kerbrute` and `windapsearch` were also left **non-executable**.
+     `verify_on_disk` already handled the empty-hash case gracefully; the fresh-download
+     path did not. Now: hash with `$pre`, and an empty hash is reported as
+     *"CANNOT BE HASHED … this is a permissions problem, NOT a bad download"* and is
+     **kept out of `HASH_MISMATCH`**, so the end-of-run "treat these as untrusted" list
+     stays truthful.
+  2. 🔴 **Artifact permissions depended on the umask of whoever launched the build.**
+     `curl -o` creates `0666 & ~umask`, and `sudo mkdir` likewise, so at umask 0007
+     `/opt/burpsuite` came out `drwxr-x--- root root`: the **685 MB Burp jar downloaded
+     perfectly** and the operator could not traverse the directory to reach it, so the
+     verification pass said `Burp jar NOT found`. Same cause for
+     `upshell exists but is NOT valid shell` (0750 root, unreadable). Fixed with explicit
+     modes — `fetch_pinned` sets `0644`, `install_burp_latest` sets `0755` on the dir and
+     `0644` on the jar and VERSION — and **all 14 `chmod +x` calls became `chmod 0755`**,
+     because POSIX `+x` with no who-list *also* respects the umask (0644 → 0754 at umask
+     0007), which would have reintroduced exactly the same drift.
+  3. 🔴 **Five apt packages were silently lost to dpkg lock contention.**
+     `E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 10042
+     (apt-get)` → `apt-transport-https`, `libssl-dev`, `mc`, `seclists`, `golang` all
+     `FAILED to install`, because `apt-get` gives up **instantly** by default. The
+     cascade was four more failures: no `golang` → `subfinder`, `httprobe` and
+     `waybackurls` never built; no `seclists` → `SecLists NOT found`. This is not a VM
+     artifact — any concurrent apt wins the race, including **the second terminal this
+     repo's own NEXT STEPS tells the operator to use for jVision while `all.sh` churns**.
+     Fixed with `-o DPkg::Lock::Timeout=600` at all 14 apt call sites across the four
+     scripts; apt then waits instead of failing. Verified the option is honoured rather
+     than assumed: `apt 3.2.0` / `apt-config dump` → `DPkg::Lock::Timeout "600"`.
+  4. **`pwntools` still failed, and cmake was necessary but not sufficient.** With cmake
+     4.3.4 present the build got much further and then died in the compiler:
+     `src/qemu/util/osdep.c:66: error: implicit declaration of function 'mprotect'` /
+     `'PROT_READ' undeclared` / `gmake: *** [Makefile:146: all] Error 2`. Not OOM — no OOM
+     kills in `dmesg`, 793 MB swap free. `pwntools` needs `unicorn`, there is no cp314
+     wheel, so pip builds unicorn 2.1.2 from source, and its bundled QEMU code does not
+     compile against **glibc 2.43 / GCC 15.2**, both now current in Kali: the newer
+     headers no longer pull in `<sys/mman.h>` transitively. Unpatchable by us.
+     **Kali ships `python3-pwntools 4.15.0-1`** — the same version pip wanted — depending
+     on the distro-built `python3-unicorn 2.1.4`. Both scripts now take it from apt, with
+     pip only as a fallback. `pkg-config` and `ninja-build` joined the toolchain
+     (`pkg-config` surfaced as its own error inside the unicorn build).
+  The `fetch_pinned` rewrite was unit-tested on four branches before the next run:
+  fresh download at umask 0007 → **mode 644 and verifies**; the skip path verifies;
+  genuinely tampered content → **still MISMATCH with both hashes**; unreadable →
+  permissions message and **not** added to `HASH_MISMATCH`.
+  ⚠️ **The Burp `stat -Lc` fix from the sixth pass is STILL unproven** — the jar was
+  unreachable this run for reason 2, so the symlink check never got to run.
 - ✅ **Closed 2026-10-05 (sixth pass): the first REAL `all.sh` run** (on a box built by the
   *old* `start.sh`). Result: **109 passed, 2 warnings, 4 failed** — and **two of the four
   failures were the verification lying about a file that was fine.** That is worse than it

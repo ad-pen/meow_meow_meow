@@ -250,10 +250,10 @@ print_success "Dropzone created at $USER_HOME/dropzone"
 export DEBIAN_FRONTEND=noninteractive
 
 print_status "Removing needrestart to avoid prompts..."
-sudo apt remove needrestart -y 2>/dev/null || print_warning "needrestart not installed"
+sudo apt-get remove needrestart -y -o DPkg::Lock::Timeout=600 2>/dev/null || print_warning "needrestart not installed"
 
 print_status "Updating package lists..."
-if sudo apt update; then
+if sudo apt-get update -o DPkg::Lock::Timeout=600; then
     print_success "Package lists updated"
 else
     print_error "Failed to update packages"
@@ -367,11 +367,22 @@ fin_msg 'APT packages'
 # ninja-build is here for icspacket further down - scikit-build-core wants cmake
 # AND ninja, and the OT section cannot install it any earlier than this.
 print_status "Ensuring the build toolchain (needed by compiled Python deps)..."
-apt_install build-essential cmake ninja-build
+apt_install build-essential cmake ninja-build pkg-config
 
 print_status "Ensuring base Python runtime (start.sh's set)..."
+# python3-pwntools FROM APT, not pip. pip has to build `unicorn` from source
+# because there is no cp314 wheel, and unicorn 2.1.2's bundled QEMU code does not
+# compile against glibc 2.43 / GCC 15.2:
+#     src/qemu/util/osdep.c:66: error: implicit declaration of function 'mprotect'
+#     src/qemu/util/osdep.c:79: error: 'PROT_READ' undeclared
+# Kali ships python3-pwntools 4.15.0-1 - the same version pip wanted - built
+# against the distro's python3-unicorn. See the long note in start.sh.
+apt_install python3-pwntools
+
 pip_ensure requests requests
 pip_ensure bs4 beautifulsoup4
+# Only reached if apt did not provide it; pip_ensure imports first, so on a
+# healthy box this is one import check and nothing is built.
 pip_ensure pwn pwntools
 fin_msg 'base Python runtime'
 
@@ -437,25 +448,29 @@ fetch_pinned powerup          $USER_HOME/dropzone/privesc/PowerUp.ps1
 fetch_pinned winpeas          $USER_HOME/dropzone/privesc/winpeas.exe
 fetch_pinned privesc_ps1      $USER_HOME/dropzone/privesc/privesc.ps1
 fetch_pinned privesccheck     $USER_HOME/dropzone/privesc/PrivescCheck.ps1
-chmod +x $USER_HOME/dropzone/privesc/linpeas.sh 2>/dev/null
+# Explicit 0755 everywhere below, never `chmod +x`. POSIX `+x` with no who-list
+# respects the UMASK, so at umask 0007 it turns 0644 into 0754 instead of 0755 -
+# the tool is then not executable by other accounts, and the mode of the build
+# silently depends on who launched it. See the note in lib.sh's fetch_pinned.
+chmod 0755 $USER_HOME/dropzone/privesc/linpeas.sh 2>/dev/null
 fin_msg 'Privesc Scripts'
 
 print_status "Downloading pspy64..."
 if fetch_pinned pspy64 $USER_HOME/dropzone/pspy64; then
-    chmod +x $USER_HOME/dropzone/pspy64
+    chmod 0755 $USER_HOME/dropzone/pspy64
     fin_msg 'pspy64'
 fi
 
 print_status "Downloading username-anarchy..."
 if fetch_pinned username_anarchy $USER_HOME/dropzone/username-anarchy; then
-    chmod +x $USER_HOME/dropzone/username-anarchy
+    chmod 0755 $USER_HOME/dropzone/username-anarchy
 fi
 
 print_status "Downloading upshell (TTY upgrade helper)..."
 if [ -f /usr/local/bin/upshell ]; then
     print_success "upshell already installed (skip)"
 elif fetch_pinned upshell $USER_HOME/dropzone/upshell; then
-    sudo cp $USER_HOME/dropzone/upshell /usr/local/bin/upshell && sudo chmod +x /usr/local/bin/upshell
+    sudo cp $USER_HOME/dropzone/upshell /usr/local/bin/upshell && sudo chmod 0755 /usr/local/bin/upshell
     print_success "upshell installed to /usr/local/bin/upshell"
     fin_msg 'upshell'
 fi
@@ -466,7 +481,7 @@ print_status "Downloading chisel..."
 if command -v chisel &>/dev/null; then
     print_success "chisel already installed: $(chisel --version 2>&1)"
 elif fetch_pinned chisel $USER_HOME/dropzone/chisel.gz && \
-     gunzip -f $USER_HOME/dropzone/chisel.gz && chmod +x $USER_HOME/dropzone/chisel && \
+     gunzip -f $USER_HOME/dropzone/chisel.gz && chmod 0755 $USER_HOME/dropzone/chisel && \
      sudo mv $USER_HOME/dropzone/chisel /usr/local/bin/chisel; then
     print_success "chisel installed: $(chisel --version 2>&1)"
     fin_msg 'chisel'
@@ -549,8 +564,8 @@ fin_msg 'Wordlists'
 print_status "Installing Sublime Text..."
 if wget -qO - https://download.sublimetext.com/sublimehq-pub.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/sublimehq-archive.gpg > /dev/null && \
    echo "deb https://download.sublimetext.com/ apt/stable/" | sudo tee /etc/apt/sources.list.d/sublime-text.list > /dev/null && \
-   sudo apt-get update -qq && \
-   sudo env DEBIAN_FRONTEND=noninteractive apt-get install -qq -y \
+   sudo apt-get update -qq -o DPkg::Lock::Timeout=600 && \
+   sudo env DEBIAN_FRONTEND=noninteractive apt-get install -qq -y -o DPkg::Lock::Timeout=600 \
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
         sublime-text; then
     subl_version=$(subl --version 2>&1)
@@ -587,7 +602,7 @@ print_status "Cloning jwt_tool (JWT tampering/cracking)..."
 cd $USER_HOME/dropzone
 clone_pinned jwt_tool https://github.com/ticarpi/jwt_tool.git "$USER_HOME/dropzone/jwt_tool"
 if [ -d "$USER_HOME/dropzone/jwt_tool" ]; then
-    chmod +x "$USER_HOME/dropzone/jwt_tool/jwt_tool.py" 2>/dev/null
+    chmod 0755 "$USER_HOME/dropzone/jwt_tool/jwt_tool.py" 2>/dev/null
     # requirements.txt is the source of truth for deps; if upstream ever moves it,
     # fall back to the ones the README names. requests is already in from start.sh.
     if [ -f "$USER_HOME/dropzone/jwt_tool/requirements.txt" ]; then
@@ -692,7 +707,7 @@ if clone_pinned opcattack https://github.com/bvcyber/opcattack "$USER_HOME/dropz
             && print_success "opcattack dependencies installed" \
             || print_warning "opcattack dependencies failed - it may not run"
     fi
-    chmod +x "$USER_HOME/dropzone/opcattack/opcattack.py" 2>/dev/null
+    chmod 0755 "$USER_HOME/dropzone/opcattack/opcattack.py" 2>/dev/null
     print_status "Run it with: python3 ~/dropzone/opcattack/opcattack.py --help"
     fin_msg 'opcattack'
 fi
@@ -867,7 +882,7 @@ fi
 print_status "Installing SharpEfsPotato (requires mono for building)..."
 if ! command -v mono &> /dev/null; then
     print_status "Installing mono for C# compilation..."
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y mono-complete mono-devel
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 mono-complete mono-devel
 fi
 
 if [ ! -d "$USER_HOME/dropzone/SharpEfsPotato" ]; then
@@ -984,7 +999,7 @@ print_status "Installing targetedKerberoast..."
 # A single script, so it runs from the clone - there is nothing to install.
 if clone_pinned targetedKerberoast https://github.com/ShutdownRepo/targetedKerberoast \
         "$USER_HOME/dropzone/targetedKerberoast"; then
-    chmod +x "$USER_HOME/dropzone/targetedKerberoast/targetedKerberoast.py" 2>/dev/null
+    chmod 0755 "$USER_HOME/dropzone/targetedKerberoast/targetedKerberoast.py" 2>/dev/null
     if [ -f "$USER_HOME/dropzone/targetedKerberoast/requirements.txt" ]; then
         pip install -r "$USER_HOME/dropzone/targetedKerberoast/requirements.txt" --break-system-packages \
             && print_success "targetedKerberoast dependencies installed" \
@@ -995,7 +1010,7 @@ if clone_pinned targetedKerberoast https://github.com/ShutdownRepo/targetedKerbe
 fi
 
 print_status "Installing Kerbrute..."
-if fetch_pinned kerbrute /usr/local/bin/kerbrute sudo && sudo chmod +x /usr/local/bin/kerbrute; then
+if fetch_pinned kerbrute /usr/local/bin/kerbrute sudo && sudo chmod 0755 /usr/local/bin/kerbrute; then
     kerbrute_version=$(kerbrute version 2>&1 || echo "installed")
     print_success "Kerbrute installed: $kerbrute_version"
     fin_msg 'Kerbrute'
@@ -1004,7 +1019,7 @@ else
 fi
 
 print_status "Installing windapsearch..."
-if fetch_pinned windapsearch /usr/local/bin/windapsearch sudo && sudo chmod +x /usr/local/bin/windapsearch; then
+if fetch_pinned windapsearch /usr/local/bin/windapsearch sudo && sudo chmod 0755 /usr/local/bin/windapsearch; then
     print_success "windapsearch installed to /usr/local/bin/windapsearch"
     fin_msg 'windapsearch'
 else
@@ -1062,7 +1077,7 @@ print_status "Installing krbrelayx (coercion + unconstrained-delegation relay)..
 # certipy cover certificates, nothing covered printerbug/PetitPotam-style coercion
 # or relaying to LDAP. printerbug.py, addspn.py and dnstool.py all live here.
 if clone_pinned krbrelayx https://github.com/dirkjanm/krbrelayx "$USER_HOME/dropzone/krbrelayx"; then
-    chmod +x "$USER_HOME/dropzone/krbrelayx"/*.py 2>/dev/null
+    chmod 0755 "$USER_HOME/dropzone/krbrelayx"/*.py 2>/dev/null
     print_status "  coerce:  python3 ~/dropzone/krbrelayx/printerbug.py -h"
     print_status "  relay:   python3 ~/dropzone/krbrelayx/krbrelayx.py -h"
     fin_msg 'krbrelayx'
@@ -1243,7 +1258,7 @@ fi
 if fetch_pinned ligolo_agent_lin "$USER_HOME/dropzone/ligolo-agent-linux.tar.gz"; then
     tar -xzf "$USER_HOME/dropzone/ligolo-agent-linux.tar.gz" -C "$USER_HOME/dropzone" agent 2>/dev/null \
         && { mv -f "$USER_HOME/dropzone/agent" "$USER_HOME/dropzone/ligolo-agent-linux"
-             chmod +x "$USER_HOME/dropzone/ligolo-agent-linux"
+             chmod 0755 "$USER_HOME/dropzone/ligolo-agent-linux"
              print_success "ligolo linux agent -> ~/dropzone/ligolo-agent-linux"
              rm -f "$USER_HOME/dropzone/ligolo-agent-linux.tar.gz"; } \
         || print_warning "ligolo linux agent tarball left in place"

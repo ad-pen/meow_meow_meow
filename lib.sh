@@ -105,7 +105,8 @@ apt_install() {
             print_success "$pkg already installed"
         elif sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
                  -o Dpkg::Options::=--force-confdef \
-                 -o Dpkg::Options::=--force-confold "$pkg"; then
+                 -o Dpkg::Options::=--force-confold \
+                 -o DPkg::Lock::Timeout=600 "$pkg"; then
             # 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
             # DEBIAN_FRONTEND, so without this, debconf prompts (docker.io's
             # "Remove all Docker data?", neo4j's preconfigure) appear and fail the
@@ -116,6 +117,21 @@ apt_install() {
             # --force-confold answers "keep what is there" without asking, which
             # is the right answer on a box we are building, and means an install
             # can never block waiting for someone who is not watching.
+            #
+            # DPkg::Lock::Timeout=600 is NOT cosmetic - it is here because of a
+            # measured failure. On the clean-VM run the first FIVE packages of
+            # all.sh's main list were silently lost:
+            #   E: Could not get lock /var/lib/dpkg/lock-frontend.
+            #      It is held by process 10042 (apt-get)
+            #   [!] apt-transport-https FAILED to install
+            #   [!] libssl-dev / mc / seclists / golang FAILED to install
+            # Something else held the lock for a few seconds and apt-get gave up
+            # instantly, so five packages just did not get installed - including
+            # golang, which every go_install below depends on. Without a timeout
+            # ANY concurrent apt loses the race: an unattended-upgrades run, a
+            # background apt-daily, or the second terminal this repo's own NEXT
+            # STEPS tells the operator to use for jVision while all.sh churns.
+            # With it, apt waits for the lock instead of failing.
             print_success "$pkg installed"
         else
             print_warning "$pkg FAILED to install"
@@ -327,8 +343,11 @@ record_pin() {   # <name> <version-or-commit> <sha256-or--> [path]
 # skip path and by 'pins.sh --audit', so both answer the question the same way.
 # Returns 0 if it matches (or is unpinned), 1 on a mismatch.
 verify_on_disk() {
-    local name=$1 f=$2 want=${PIN_SHA[$1]:-TBD} ver=${PIN_VER[$1]:-?} got
-    got=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
+    local name=$1 f=$2 pre=${3:-} want=${PIN_SHA[$1]:-TBD} ver=${PIN_VER[$1]:-?} got
+    # Hash with the SAME privilege the file was written with. See the long note
+    # in fetch_pinned: a sudo-written file the calling user cannot read produced
+    # an empty hash, which was then reported as a MISMATCH.
+    got=$($pre sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
     if [ -z "$got" ]; then
         print_warning "$name present but unreadable: $f"
         return 1
@@ -373,14 +392,40 @@ fetch_pinned() {
         return 1
     fi
     if [ -s "$dest" ]; then
-        verify_on_disk "$name" "$dest"
+        verify_on_disk "$name" "$dest" "$pre"
         return $?
     fi
     if ! $pre curl -fSL --retry 3 --connect-timeout 15 "$url" -o "$dest"; then
         print_warning "download failed: $(basename "$dest")"
         return 1
     fi
-    got=$(sha256sum "$dest" 2>/dev/null | cut -d' ' -f1)
+    # ------------------------------------------------------------------
+    # DETERMINISTIC MODE. curl creates the file as 0666 & ~umask, so the
+    # permissions of everything we install depended on the umask of whoever
+    # launched the build. On the clean-VM run that umask was 0007, so artifacts
+    # landed root-only 0640 and the whole chain below collapsed - see the note
+    # on the hash. 0644 is the baseline; call sites that install an executable
+    # chmod 0755 afterwards (explicit mode, NOT `chmod +x`, which itself
+    # respects the umask and would reintroduce the same drift).
+    $pre chmod 0644 "$dest" 2>/dev/null
+    # ------------------------------------------------------------------
+    # HASH WITH THE SAME PRIVILEGE WE DOWNLOADED WITH.
+    # This line used to be a bare `sha256sum "$dest"`. When $pre is `sudo`, the
+    # file belongs to root, and if the umask made it unreadable to us the hash
+    # came back EMPTY - which does not equal the pin, so it was reported as:
+    #     [-] kerbrute SHA256 MISMATCH - expected 710a9d2653c8bd36... got ...
+    #     [-]   Do NOT use this file until you know why.
+    # The file was byte-perfect. The real error was "Permission denied", and
+    # the message said the artifact was tampered with - the most alarming thing
+    # this script can say, about a file that was fine. It also returned 1, which
+    # short-circuited the `&& sudo chmod +x` in the caller, so kerbrute and
+    # windapsearch were left non-executable as well.
+    got=$($pre sha256sum "$dest" 2>/dev/null | cut -d' ' -f1)
+    if [ -z "$got" ]; then
+        print_error "$name downloaded but CANNOT BE HASHED (unreadable even with '${pre:-no sudo}')"
+        print_error "  $dest - this is a permissions problem, NOT a bad download."
+        return 1
+    fi
     if [ "$want" = "TBD" ]; then
         print_warning "$name fetched UNVERIFIED (version: $ver, sha256: ${got:0:16}...)"
         UNPINNED+=("$name")
@@ -525,8 +570,15 @@ install_burp_latest() {
         return 1
     fi
     sudo mv -f "$jar.part" "$jar"
-    sudo ln -sfn "$jar" "$BURP_DIR/burpsuite.jar"
+    # Explicit modes for the same reason as fetch_pinned: `sudo mkdir` and
+    # `sudo curl` both honour the ambient umask, and at umask 0007 this directory
+    # came out drwxr-x--- root:root. The 685 MB jar was downloaded perfectly and
+    # the operator could not traverse the directory to reach it, so the
+    # verification pass reported "Burp jar NOT found" on a complete download.
+    sudo chmod 0755 "$BURP_DIR"
+    sudo chmod 0644 "$jar"
     printf '%s\n' "$want" | sudo tee "$BURP_DIR/VERSION" >/dev/null
+    sudo chmod 0644 "$BURP_DIR/VERSION"
     sha=$(sha256sum "$jar" 2>/dev/null | cut -d' ' -f1)
     record_pin "burpsuite" "$want" "${sha:--}" "$jar"
     print_success "Burp Suite Community $want -> $jar"

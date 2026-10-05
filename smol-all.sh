@@ -120,20 +120,20 @@ if [ ${#TODO[@]} -eq 0 ]; then
     print_success "Every critical package is already installed - nothing to do."
 else
     print_status "Updating package lists..."
-    sudo apt-get update -qq || print_warning "apt update had problems - continuing anyway"
+    sudo apt-get update -qq -o DPkg::Lock::Timeout=600 || print_warning "apt update had problems - continuing anyway"
 
     print_status "Installing ${#TODO[@]} package(s): ${TODO[*]}"
     # ONE transaction first: it is dramatically faster than all.sh's one-at-a-time
     # loop. Only if that transaction fails do we fall back to per-package installs,
     # so we get all.sh's failure isolation without paying for it up front.
-    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 \
            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "${TODO[@]}"; then
         print_success "All packages installed in one pass"
     else
         print_warning "Batch install failed - retrying one at a time to isolate the bad package"
         FAILED=()
         for p in "${TODO[@]}"; do
-            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 \
                    -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$p"; then
                 print_success "$p installed"
             else
@@ -154,7 +154,7 @@ if [ ! -s "$USER_HOME/dropzone/privesc/linpeas.sh" ]; then
     if curl -fsSL --retry 2 --connect-timeout 10 --max-time 120 \
         https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh \
         -o "$USER_HOME/dropzone/privesc/linpeas.sh"; then
-        chmod +x "$USER_HOME/dropzone/privesc/linpeas.sh"
+        chmod 0755 "$USER_HOME/dropzone/privesc/linpeas.sh"
         print_success "linpeas -> ~/dropzone/privesc/linpeas.sh"
     else
         print_warning "linpeas download failed (non-critical)"
@@ -167,7 +167,7 @@ if ! command -v chisel &>/dev/null; then
     print_status "Fetching chisel..."
     if curl -fsSL --retry 2 --connect-timeout 10 --max-time 180 \
         https://github.com/jpillora/chisel/releases/download/v1.10.1/chisel_1.10.1_linux_amd64.gz \
-        -o /tmp/chisel.gz && gunzip -f /tmp/chisel.gz && chmod +x /tmp/chisel \
+        -o /tmp/chisel.gz && gunzip -f /tmp/chisel.gz && chmod 0755 /tmp/chisel \
         && sudo mv /tmp/chisel /usr/local/bin/chisel; then
         print_success "chisel -> /usr/local/bin/chisel"
     else
