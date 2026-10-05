@@ -512,16 +512,37 @@ else
 fi
 
 
+# ScoutSuite and principalmapper REMOVED 2026-10-05, on measured cost.
+# They were the single most expensive thing in the build. Timed on run 5, this
+# pip block alone took 7m40s - 1,117 package downloads and 1.7 GB of
+# site-packages - and ScoutSuite was responsible for nearly all of it, because it
+# is a MULTI-cloud auditor and pip installs every provider SDK whether or not we
+# will ever point it at one. Confirmed by `Required-by`, every one of these came
+# from ScoutSuite and nothing else:
+#     oci                       430 MB   Oracle Cloud
+#     google-api-python-client  109 MB
+#     kubernetes                 82 MB
+#     pydo                       73 MB   DigitalOcean
+#     + nine aliyun-python-sdk-* packages   Alibaba Cloud
+# That is roughly a quarter of all.sh's wall time spent on Oracle, Alibaba, GCP
+# and DigitalOcean support for an engagement against a theme park.
+#
+# What is left still covers the cloud work we actually expect: awscli and pacu
+# for AWS, and azure-cli + roadtools + azurehound below for Entra/Azure - which
+# is the likelier target anyway, since the CPTC 12 client was identified through
+# its Azure tenant and the deliverables live in M365.
+#
+# If a cloud assessment genuinely needs them on the day, both are one pip install
+# from the box (`pip install scoutsuite principalmapper --break-system-packages`)
+# and that is a better trade than every operator paying 7 minutes and 1.7 GB.
 print_status "Installing AWS/Cloud Python packages..."
 pip_ensure pacu pacu
-pip_ensure ScoutSuite scoutsuite
-pip_ensure principalmapper principalmapper
 pip_ensure minikerberos minikerberos
 pip_ensure pypykatz pypykatz
 fin_msg 'Cloud Security Tools'
 
 # --- Azure / Entra ID ------------------------------------------------------
-# Everything above this point is AWS-ONLY (awscli, pacu, ScoutSuite, pmapper).
+# Everything above this point is AWS-ONLY (awscli, pacu).
 # That is a real hole: CPTC's own infrastructure is an Entra/M365 tenant, the
 # deliverables live in M365, and the CPTC 12 client was identified THROUGH its
 # Azure tenant. If the in-scope cloud turns out to be Azure we previously had

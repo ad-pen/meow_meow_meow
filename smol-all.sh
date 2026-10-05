@@ -285,7 +285,7 @@ echo
 print_warning "NOT installed by this script - run all.sh when the pressure is off:"
 echo "    SecLists / rockyou / nuclei-templates / Go tools (httpx, subfinder)"
 echo "    hashcat + john / Ghostpack / BloodHound + neo4j / cloud stack (pacu,"
-echo "    ScoutSuite) / the reporting pipeline (docx, fitz, tesseract, libreoffice)"
+echo "    pacu) / the reporting pipeline (docx, fitz, tesseract, libreoffice)"
 echo
 print_status "Full build:  bash \"$SCRIPT_DIR/all.sh\"   (includes AD)      AD only:  bash \"$SCRIPT_DIR/all.sh\" --ad-only"
 print_status "Log: $LOG_FILE"
