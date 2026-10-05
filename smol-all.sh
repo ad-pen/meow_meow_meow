@@ -287,5 +287,5 @@ echo "    SecLists / rockyou / nuclei-templates / Go tools (httpx, subfinder)"
 echo "    hashcat + john / Ghostpack / BloodHound + neo4j / cloud stack (pacu,"
 echo "    ScoutSuite) / the reporting pipeline (docx, fitz, tesseract, libreoffice)"
 echo
-print_status "Full build:  bash \"$SCRIPT_DIR/all.sh\"      AD extras:  bash \"$SCRIPT_DIR/ad.sh\""
+print_status "Full build:  bash \"$SCRIPT_DIR/all.sh\"   (includes AD)      AD only:  bash \"$SCRIPT_DIR/all.sh\" --ad-only"
 print_status "Log: $LOG_FILE"

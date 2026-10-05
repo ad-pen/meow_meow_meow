@@ -110,30 +110,57 @@ preflight() {
     # [1] command logging: installed in the rc files, AND actually loaded.
     # A loaded hook is the only thing that proves it: the log file only grows
     # once a shell has sourced the block, so a non-empty log == activated.
+    #
+    # REPAIRS RATHER THAN REPORTS. If the block is absent this used to print
+    # "fix: bash command_logging.sh" and move on - asking a human to type a
+    # command that is sitting in this repo, is idempotent, and that this script
+    # can simply run. A box that is not ready for all.sh after start.sh is a
+    # script problem, so all.sh fixes what it is able to fix.
+    if ! grep -q "cptc engagement logging" "$USER_HOME/.zshrc" "$USER_HOME/.bashrc" 2>/dev/null; then
+        pf_note "command logging not configured - running command_logging.sh now"
+        bash "$SCRIPT_DIR/command_logging.sh" || true
+    fi
     if grep -q "cptc engagement logging" "$USER_HOME/.zshrc" "$USER_HOME/.bashrc" 2>/dev/null; then
         pf_ok "command logging block installed in $USER_HOME/.zshrc / $USER_HOME/.bashrc"
         if [ -s "$USER_HOME/.zsh_history_readable" ]; then
             pf_ok "command logging is LIVE ($(wc -l < "$USER_HOME/.zsh_history_readable") lines so far)"
         else
+            # THE ONE ITEM NO SCRIPT CAN FIX. The hook loads when a shell sources
+            # the rc file; all.sh cannot source anything into the parent shell
+            # that invoked it. This genuinely needs the operator to open a shell.
             pf_bad "command logging installed but NOTHING logged yet - hook not loaded" \
-                   "source $USER_HOME/.zshrc   (or $USER_HOME/.bashrc, or open a fresh shell) then re-run this"
+                   "open a FRESH terminal (all.sh cannot load a hook into the shell that started it)"
         fi
     else
-        pf_bad "command logging NOT configured" \
-               "bash \"$SCRIPT_DIR/command_logging.sh\"  then  source $USER_HOME/.zshrc"
+        pf_bad "command logging STILL not configured after re-running command_logging.sh" \
+               "read the command_logging.sh output above - this is a real failure"
     fi
 
-    # [2] uniform terminal - both emulators, so screenshots match across the team
+    # [2] uniform terminal - both emulators, so screenshots match across the team.
+    # Same policy as [1]: re-run the repo's own script instead of printing it as
+    # homework. terminal_uniform.sh does chattr -i before writing, so re-running
+    # it over an already-locked qterminal.ini is safe and idempotent.
     local uni=0
-    grep -q "^colorScheme=CPTC" "$USER_HOME/.config/qterminal.org/qterminal.ini" 2>/dev/null && uni=$((uni+1))
-    grep -q "^ColorPalette=" "$USER_HOME/.config/xfce4/terminal/terminalrc" 2>/dev/null && uni=$((uni+1))
+    _count_uni() {
+        uni=0
+        grep -q "^colorScheme=CPTC" "$USER_HOME/.config/qterminal.org/qterminal.ini" 2>/dev/null && uni=$((uni+1))
+        grep -q "^ColorPalette=" "$USER_HOME/.config/xfce4/terminal/terminalrc" 2>/dev/null && uni=$((uni+1))
+        return 0
+    }
+    _count_uni
+    if [ "$uni" -ne 2 ]; then
+        pf_note "uniform terminal incomplete ($uni/2 emulators) - running terminal_uniform.sh now"
+        bash "$SCRIPT_DIR/terminal_uniform.sh" || true
+        _count_uni
+    fi
     if [ "$uni" -eq 2 ]; then
         pf_ok "uniform terminal applied (qterminal + xfce4-terminal)"
     elif [ "$uni" -eq 1 ]; then
         pf_note "uniform terminal applied to only ONE emulator - screenshots may not match" \
-                "bash \"$SCRIPT_DIR/terminal_uniform.sh\""
+                "the other emulator may simply not be installed on this box"
     else
-        pf_bad "uniform terminal NOT applied" "bash \"$SCRIPT_DIR/terminal_uniform.sh\""
+        pf_bad "uniform terminal NOT applied even after re-running terminal_uniform.sh" \
+               "read the terminal_uniform.sh output above - this is a real failure"
     fi
 
     # [3] Burp: deliberately NOT checked here any more.
@@ -152,7 +179,8 @@ else
         print_success "Preflight clean - every manual step from start.sh is done."
     else
         print_warning "$PREFLIGHT_FAIL preflight check(s) FAILED (see above)."
-        print_warning "all.sh installs tools - it does NOT fix any of these."
+        print_warning "These are the ones all.sh could NOT repair by itself - it already"
+        print_warning "re-ran command_logging.sh / terminal_uniform.sh for anything it could."
         print_warning "Anything you run before command logging is live is absent from the"
         print_warning "engagement log, and that log is what answers 'prove what you did at time T'."
     fi
@@ -309,6 +337,32 @@ else
 fi
 
 fin_msg 'APT packages'
+
+# ---------------------------------------------------------------------------
+# BASE PYTHON RUNTIME  - RE-ENSURED HERE, NOT JUST CHECKED
+# ---------------------------------------------------------------------------
+# These three are start.sh's job. They are repeated here because all.sh used to
+# only *verify* them (check_pymod requests / check_pymod pwn, far below) and had
+# no way to fix what it found missing.
+#
+# That gap was not theoretical. On the first clean-VM run, start.sh's single
+# `pip install argparse requests pwntools bs4` died because pwntools pulls
+# `unicorn`, which builds C extensions and found no cmake on a stock Kali image.
+# pip treats one command as one transaction, so `failed-wheel-build-for-install`
+# took the other three with it. all.sh then dutifully reported pwntools missing
+# at the end of a 40-minute build and did nothing about it - which leaves the box
+# NOT READY, with the only remedy being a human typing pip commands.
+#
+# The build is not allowed to need that. start.sh now installs cmake and splits
+# the pip calls so the root cause is gone; this block is the second line of
+# defence, so a box whose start.sh phase failed for ANY reason still converges
+# when all.sh runs. pip_ensure imports first and skips when present, so on a
+# healthy box these are three no-op import checks.
+print_status "Ensuring base Python runtime (start.sh's set)..."
+pip_ensure requests requests
+pip_ensure bs4 beautifulsoup4
+pip_ensure pwn pwntools
+fin_msg 'base Python runtime'
 
 # ---------------------------------------------------------------------------
 # BURP SUITE + ITS LOGGING EXTENSION  - in that order, and both live HERE
@@ -681,7 +735,7 @@ print_status "Installing AD / internal tooling..."
 apt_install \
     impacket-scripts bloodhound.py bloodhound-ce-python bloodhound neo4j \
     certipy-ad evil-winrm \
-    build-essential python3-dev libffi-dev \
+    build-essential python3-dev libffi-dev cmake \
     ldap-utils krb5-user libkrb5-dev freerdp3-x11 ntpsec-ntpdate
 # The five packages on the last line, and why each earns its place (~1 MB total):
 #  * ldap-utils     - ldapsearch. It was in smol-all.sh's AD set and NOT here, which
@@ -834,6 +888,11 @@ pip_ensure minikerberos minikerberos   # already installed above; pip_ensure ski
 fin_msg 'PKINITtools'
 
 print_status "Installing bloodyAD..."
+# ldap3 explicitly, not just as a transitive dep of the requirements.txt below:
+# the verification pass checks for it by name, and a check whose only installer is
+# "some other package's requirements file happened to pull it" is the bug that lost
+# us pwntools. pip_ensure is an import check first, so this is free when it is there.
+pip_ensure ldap3 ldap3
 clone_pinned bloodyAD https://github.com/CravateRouge/bloodyAD.git "$USER_HOME/dropzone/bloodyAD"
 if [ -d "$USER_HOME/dropzone/bloodyAD" ]; then
     if cd "$USER_HOME/dropzone/bloodyAD"; then
@@ -1321,6 +1380,7 @@ check_tool "rlwrap" "rlwrap --version" "rlwrap"
 
 print_status "Checking Python packages..."
 check_pymod requests "requests"
+check_pymod bs4 "beautifulsoup4"
 check_pymod pwn "pwntools"
 
 print_status "Checking reporting pipeline dependencies..."

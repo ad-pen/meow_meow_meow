@@ -6,7 +6,7 @@ install line in those, update this file in the same commit.
 
 **Src** column: **S** = `start.sh` · **A** = `all.sh` · **D** = `ad.sh` · **I** = `all.sh --ismael`
 
-Run order: `start.sh` → (`all.sh` and the jVision server can run in parallel) → `ad.sh`.
+Run order: `start.sh` → (`all.sh` and the jVision server can run in parallel). `all.sh` includes the AD section — there is no third step.
 The Windows box is independent: `windows.ps1`, during prep, while egress exists.
 Lost a box mid-engagement? `smol-all.sh` installs the critical path only, in minutes —
 see its header. Before the event, build against `REHEARSAL.md`.
@@ -331,10 +331,10 @@ CPTC 12 ships real OT, not because it is expected.
 | Desktop | `kali-desktop-xfce`, `xorg`, `xrdp` | S | xRDP for Burp's GUI; **~2.2 GB, the heaviest thing in the build** |
 | Access | SSH service | S | enabled + started |
 | Runtime | `python3`, `python3-pip`, `python3-venv` | S + A | |
-| Runtime | `requests`, `pwntools`, `bs4`, `argparse` | S | jVision client deps |
+| Runtime | `requests`, `pwntools`, `beautifulsoup4` | S | jVision client deps. Installed **one pip call each** — a single call aborts the whole transaction on one bad wheel, which is how a failed `unicorn` build took `requests` and `bs4` down with it on the clean-VM run. `argparse` was **removed**: stdlib since 2.7, and the PyPI package shadows it with a 2012 backport |
 | Runtime | `golang` | A | builds the 4 Go tools |
 | Runtime | `openjdk-11-jdk` | A | ✅ **verified present in Kali** (11.0.31+11-1). Needed by Burp and `ysoserial` |
-| Build | `build-essential`, `python3-dev`, `libffi-dev` | D | lets `aardwolf` compile |
+| Build | `build-essential`, `python3-dev`, `libffi-dev`, `cmake` | S+D | lets `aardwolf` compile. `cmake` + `build-essential` are also in `start.sh`: `pwntools` pulls `unicorn`, which builds C extensions and fails with `No such file or directory: 'cmake'` on a stock Kali image |
 | Build | `mono-complete`, `mono-devel` | D | conditional, for SharpEfsPotato |
 | Build | `apt-transport-https`, `libssl-dev` | A | |
 | Base | `git`, `curl`, `wget`, `unzip` | S + A | `unzip` unpacks the AzureHound release |
@@ -402,7 +402,7 @@ Two notes worth keeping:
 ## Counts
 
 65 apt in `all.sh` main list + 8 reporting + `azure-cli` + Sublime · 4 more under `--ismael` ·
-**20** apt in `ad.sh` (+2 mono) · 12 apt in `start.sh` ·
+**20** apt in `ad.sh` (+2 mono) · 14 apt in `start.sh` ·
 8 pip (A) + 1 pip (I) + 4 pip (D) · 4 Go ·
 **33 pin-manifest artifacts** (all hash-verified) · **21 `fetch_pinned` + 12 `clone_pinned` in `ad.sh`** ·
 3 pinned artifacts in `windows.ps1` + 6 choco packages.
@@ -447,6 +447,56 @@ Two notes worth keeping:
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--ismael`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (fifth pass): the first REAL clean-Kali-VM run of `start.sh`.**
+  Every prior pass was reviewed or dry-run; this one ran on a fresh image and the log
+  showed four defects no amount of reading had caught.
+  1. **`pwntools` was never installed** and neither were `requests` or `bs4`. `pwntools`
+     pulls `unicorn`, which builds C extensions and died on
+     `error: [Errno 2] No such file or directory: 'cmake'`. Because all four packages were
+     one `pip install` command, `failed-wheel-build-for-install` aborted the *whole*
+     transaction. `cmake` + `build-essential` now install in `start.sh`, and each pip
+     package gets its own call. `all.sh` would not have rescued it — it only *checks*
+     `check_pymod pwn` and never reinstalls.
+  2. **The pip/setuptools self-upgrade was actively harmful.** Run as the operator it
+     landed pip 26.2.1 and setuptools 84 in `~/.local`, shadowing Kali's own 26.1.2 / 78.1.1
+     for every Python process that user starts — the log's 24-line `faradaysec ... which is
+     incompatible` wall is that shadowing being announced. Removed; Kali rolling ships a
+     current pip.
+  3. **`argparse` was being installed from PyPI** — stdlib since 2.7, and the PyPI package
+     is a 2012 backport that shadows it. Removed.
+  4. **`NEXT STEPS [4]` still told the operator to run `ad.sh`** after the merge, and the
+     completion banner's box border was blown open by the log path. Both fixed; the AD
+     flags are documented under step [3] instead.
+  Also hardened: `needrestart` is a **Recommends** of packages we install, so removing it
+  once is not enough — `/etc/apt/preferences.d/99-cptc-no-needrestart` pins it to -1 so it
+  cannot come back and make `all.sh` interactive. And the Python verification now **names
+  the module that is missing** instead of printing "some packages may not be fully
+  functional", which was the only warning the operator got.
+
+  **The structural lesson, applied repo-wide: a box that is not ready for `all.sh` after
+  `start.sh` is a SCRIPT defect, never something an operator patches by hand.** The VM
+  exists to test the scripts; hand-fixing it destroys the test. Three consequences, all
+  now implemented:
+  1. **`all.sh` re-ensures `start.sh`'s Python runtime** (`requests`, `bs4`, `pwntools`)
+     instead of only verifying it. It is `pip_ensure`, which imports first, so it costs
+     three import checks on a healthy box and rescues a box whose `start.sh` pip phase
+     failed for any reason.
+  2. **The preflight REPAIRS instead of assigning homework.** It used to print
+     `fix: bash command_logging.sh` / `fix: bash terminal_uniform.sh` — commands that live
+     in this repo, are idempotent, and `all.sh` can simply run. It now runs them and
+     re-checks. The only item left as a genuine FAIL is "logging installed but hook not
+     loaded", which no script can fix: loading a hook into the shell that invoked `all.sh`
+     is impossible, so that one really does need a fresh terminal.
+  3. **Audited every check for a missing installer**, since that is the shape of the
+     pwntools bug — a `check_*` with nothing behind it. Found one more: `ldap3` was
+     verified by name but arrived only as a transitive dependency of bloodyAD's
+     `requirements.txt`, so a failed clone produced a check with no installer. Now
+     `pip_ensure ldap3` in its own right. `bs4` was the reverse (installed, never checked)
+     and now has a `check_pymod`. The remaining `check_tool` names with no literal match
+     — `ldapsearch`, `msfconsole`, `soffice`, `tshark`, `xfreerdp3`, `nmap` — were each
+     traced to a real package whose name simply differs from the binary's
+     (`ldap-utils`, `metasploit-framework`, `libreoffice-writer`, `wireshark`,
+     `freerdp3-x11`, and `start.sh`'s hard-fail basic list). No gaps left.
 - ✅ **Closed 2026-10-05 (fourth pass): `ad.sh` and `all.sh` are one script.** They were
   always run back to back on the same box against the same `lib.sh`, and keeping them
   apart cost a duplicated ~80-line verification helper block (now in `lib.sh`), two apt

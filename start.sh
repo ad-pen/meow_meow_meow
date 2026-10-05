@@ -124,6 +124,18 @@ print_status "Removing needrestart to avoid interactive prompts..."
 sudo env DEBIAN_FRONTEND=noninteractive apt-get remove -y needrestart 2>/dev/null \
     || print_warning "needrestart not installed (ok)"
 
+# Removing it once is not enough. needrestart is a RECOMMENDS of several packages
+# we install (docker.io pulls it in; the clean-VM log shows apt listing it under
+# "Recommended packages"). On a box where APT::Install-Recommends is true it would
+# come straight back, and the very next big apt run - all.sh - becomes the
+# interactive questionnaire this whole build exists to avoid. A negative pin is
+# the only thing that actually holds.
+sudo tee /etc/apt/preferences.d/99-cptc-no-needrestart >/dev/null <<'PIN'
+Package: needrestart
+Pin: release *
+Pin-Priority: -1
+PIN
+
 print_status "Updating package lists..."
 if sudo apt update; then
     print_success "Package lists updated"
@@ -148,7 +160,9 @@ if "${APT_NI[@]}" \
     curl \
     wget \
     docker.io \
-    docker-compose; then
+    docker-compose \
+    build-essential \
+    cmake; then
     print_success "Basic packages installed"
 else
     print_error "Failed to install basic packages"
@@ -187,24 +201,55 @@ else
     print_warning "docker not present - jVision server cannot start until all.sh installs it"
 fi
 
-print_status "Upgrading pip and setuptools..."
-if python3 -m pip install --upgrade pip setuptools --break-system-packages; then
-    print_success "pip and setuptools upgraded"
-else
-    print_warning "Failed to upgrade pip/setuptools (non-critical)"
-fi
+# NO pip/setuptools SELF-UPGRADE HERE - deliberately removed.
+# It used to run `pip install --upgrade pip setuptools`. On a clean Kali VM that
+# is run as the operator, so pip says "Defaulting to user installation" and drops
+# a NEWER pip and setuptools into ~/.local/lib/pythonX.Y/site-packages, which
+# then SHADOWS the distro's copies for every Python process that user starts.
+# The clean-VM log shows what that buys: setuptools jumping 78 -> 84 and a
+# 24-line wall of "faradaysec requires setuptools<81 ... which is incompatible".
+# Kali rolling already ships a current pip (26.1.2 on the test box), so the
+# upgrade gained nothing and risked breaking preinstalled Kali tooling.
 
-print_status "Installing Python packages (argparse, requests, pwntools, bs4)..."
-if pip install argparse requests pwntools bs4 --break-system-packages; then
+# argparse is NOT in this list any more either. It has been in the standard
+# library since Python 2.7; the PyPI package is a 2012 backport, and installing
+# it shadows the stdlib module with a decade-old one.
+#
+# Installed ONE AT A TIME on purpose. pip resolves the whole command as a single
+# transaction: on the test box pwntools' `unicorn` dependency failed to build and
+# took requests and bs4 down with it, because `error: failed-wheel-build-for-install`
+# aborts everything. Separate calls mean one bad wheel costs one package.
+print_status "Installing Python packages (requests, pwntools, beautifulsoup4)..."
+PY_FAILED=()
+for pkg in requests pwntools beautifulsoup4; do
+    if python3 -m pip install "$pkg" --break-system-packages; then
+        print_success "  $pkg installed"
+    else
+        print_warning "  $pkg FAILED to install"
+        PY_FAILED+=("$pkg")
+    fi
+done
+if [ ${#PY_FAILED[@]} -eq 0 ]; then
     print_success "Python packages installed"
 else
-    print_warning "Some Python packages may have failed (non-critical)"
+    print_warning "Failed to install: ${PY_FAILED[*]} (non-critical - all.sh re-checks)"
 fi
 
+# Name the module that is missing. The old version collapsed three imports into
+# one `python3 -c` and printed "Some Python packages may not be fully functional"
+# - true, useless, and it is the only warning the operator gets before all.sh
+# reports the same tool missing an hour later.
 print_status "Verifying Python package installations..."
-python3 -c "import requests; import bs4; import pwn" 2>/dev/null && \
-    print_success "Python packages verified" || \
-    print_warning "Some Python packages may not be fully functional"
+PY_MISSING=()
+for mod in requests bs4 pwn; do
+    python3 -c "import $mod" 2>/dev/null || PY_MISSING+=("$mod")
+done
+if [ ${#PY_MISSING[@]} -eq 0 ]; then
+    print_success "Python packages verified (requests, bs4, pwn)"
+else
+    print_warning "Python modules NOT importable: ${PY_MISSING[*]}"
+    print_warning "  Retry by hand:  python3 -m pip install <pkg> --break-system-packages"
+fi
 
 
 print_status "Configuring SSH service..."
@@ -257,9 +302,11 @@ fi
 echo -e "\n${GREEN}"
 echo "╔═══════════════════════════════════════════════════════╗"
 echo "║     Initial Setup Complete!                           ║"
-echo "║     Log file: $LOG_FILE                               ║"
 echo "║     Good Luck!!       ~ ziadstr                       ║"
 echo "╚═══════════════════════════════════════════════════════╝"
+# $LOG_FILE is printed OUTSIDE the box: its length varies with the operator's
+# username, so inside the border it blew the box open on the clean-VM run.
+echo "      Log file: $LOG_FILE"
 echo -e "${NC}"
 
 # --- NEXT STEPS ------------------------------------------------------------
@@ -291,7 +338,10 @@ echo "    all.sh installs BURP and then wires in the logging extension, so Burp"
 echo "    is NOT set up yet at this point - that is expected."
 echo "    It re-checks steps [1]-[2], REPORTS anything missing, and continues"
 echo "    without asking. Nothing in this build waits for an answer."
-echo "    Docker is already installed, so [5] can run in a SECOND terminal while"
+echo "    This INCLUDES the AD tooling - there is no separate ad.sh step any more."
+echo "        bash \"$SCRIPT_DIR/all.sh\" --ad-only   # AD section only, on a built box"
+echo "        bash \"$SCRIPT_DIR/all.sh\" --no-ad      # skip it (~650 MB lighter)"
+echo "    Docker is already installed, so [4] can run in a SECOND terminal while"
 echo "    this one is still churning through all.sh."
 
 echo
@@ -301,18 +351,14 @@ echo "    Extensions tab should show 'CPTC Engagement Logger'."
 echo "    Hit Repeater once, then:  tail -f $USER_HOME/.burp_history_readable"
 
 echo
-echo -e "${BLUE}[4] AD-side tools${NC} (run before AD work)"
-echo "    bash \"$SCRIPT_DIR/ad.sh\""
-
-echo
-echo -e "${BLUE}[5] Bring up the jVision server${NC} (safe to run alongside all.sh)"
+echo -e "${BLUE}[4] Bring up the jVision server${NC} (safe to run alongside all.sh)"
 echo "    cd \"$SCRIPT_DIR/jVision\" && sudo docker-compose up -d --build"
 echo "    Serves on port 7777. Drop the 'sudo' once you have re-logged in."
 echo "    Check it:  sudo docker-compose ps   |   logs: sudo docker-compose logs -f"
 echo "    ('docker compose' with a space also works if the CLI plugin is registered.)"
 
 echo
-echo -e "${BLUE}[6] AT ENGAGEMENT START -- push your logs to jVision${NC}"
+echo -e "${BLUE}[5] AT ENGAGEMENT START -- push your logs to jVision${NC}"
 echo "    bash \"$SCRIPT_DIR/jvis_logsync.sh\" start -i <jvision-ip> -u <jvis-user>"
 echo "    Control commands:"
 echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" status"
@@ -321,7 +367,7 @@ echo "        bash \"$SCRIPT_DIR/jvis_logsync.sh\" stop"
 echo "    (Prompts for your jVision password; JVIS_PASS env var also works.)"
 
 echo
-echo -e "${BLUE}[7] Run scans via the jVision client${NC} (from the jVision repo)"
+echo -e "${BLUE}[6] Run scans via the jVision client${NC} (from the jVision repo)"
 echo "    sudo python3 jvisionclient.py -i <jvision-ip> -p 7777 -s <target-subnet>"
 echo "        -n         only run the heavy scan (skip the fast pass)"
 echo "        -u         also run UDP top-50 (SNMP/DNS/NetBIOS etc.)"
