@@ -182,8 +182,29 @@ apt_install() {
             # With it, apt waits for the lock instead of failing.
             print_success "$pkg installed"
         else
-            print_warning "$pkg FAILED to install"
-            APT_FAILED+=("$pkg")
+            # RETRY ONCE BEFORE GIVING UP. apt's own Acquire::Retries (set above)
+            # covers connection failures and timeouts, but NOT a definitive HTTP
+            # 4xx - apt treats that as a hard error and stops. Both observed:
+            #   run 3: E: Unable to connect to mirrors.netix.net  -> lost libreoffice-writer
+            #   run 6: E: Failed to fetch .../sharphound_2.14.0.deb 403 Forbidden
+            #          [IP: 104.17.253.239]                        -> lost bloodhound
+            # That is two of six end-to-end runs losing a package to a transient
+            # mirror or CDN fault, and in run 6 it cost BloodHound - the centre of
+            # the whole AD workflow. kali.download is Cloudflare-fronted, so a
+            # second attempt often lands on a different edge; both failures
+            # succeeded by hand minutes later.
+            print_warning "$pkg failed - retrying once in 5s (transient mirror/CDN faults are common)"
+            sleep 5
+            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                   -o Dpkg::Options::=--force-confdef \
+                   -o Dpkg::Options::=--force-confold \
+                   -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \
+                   $APT_IPV4 "$pkg"; then
+                print_success "$pkg installed (on retry)"
+            else
+                print_warning "$pkg FAILED to install (after a retry)"
+                APT_FAILED+=("$pkg")
+            fi
         fi
     done
 }

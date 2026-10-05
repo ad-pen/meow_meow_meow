@@ -487,6 +487,29 @@ files that carry the engagement-evidence layer, where noise beats silence.
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--mobile`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (twelfth pass): run 6 measured the ScoutSuite saving, and lost
+  BloodHound to a CDN 403.** 114 passed, 0 warnings, 1 failed. `start.sh` 3m01s,
+  `all.sh` 30m22s.
+  **The measured saving, and I over-predicted it:** site-packages went **1.7 GB → 451 MB
+  (1.25 GB saved)** and the cloud pip block's download count went **1117 → 756**. All five
+  heavy SDKs confirmed gone (`oci`, `googleapiclient`, `kubernetes`, `pydo`,
+  `aliyunsdkcore`). But wall time only went **32m58s → 30m22s, i.e. ~2m36s**, not the
+  ~7m40s I predicted — most of that block's time was `pacu`/`awscli`/`boto3` dependency
+  resolution, which remains. And with `start.sh` alone varying **4.5×** across runs
+  (12m38s / 2m47s / 3m01s on identical code), a single-sample time delta is weak evidence.
+  **The disk figure is solid; treat the time figure as indicative.**
+  🔴 **New failure: `bloodhound FAILED to install`** —
+  `E: Failed to fetch .../sharphound_2.14.0-0kali1_all.deb 403 Forbidden [IP: 104.17.253.239]`.
+  A Cloudflare edge 403'd `sharphound`, which `bloodhound` depends on, so the **centre of the
+  AD workflow** was absent from the box. **`Acquire::Retries=3` does not cover this**: apt
+  retries connection failures and timeouts but treats a definitive HTTP 4xx as a hard error
+  and stops. That is now **two of six end-to-end runs losing a package to a transient mirror
+  or CDN fault** (run 3 `libreoffice-writer`, connection refused; run 6 `bloodhound`, 403) —
+  a 33% rate on a build that has to work on engagement morning. `apt_install` now **retries
+  once after 5 s** before recording a failure; `kali.download` is Cloudflare-fronted so a
+  second attempt often lands on a different edge, and both observed failures succeeded by
+  hand minutes later. Unit-tested both branches: a transient failure recovers and is **not**
+  recorded, a permanent one gives up after the retry and **is** recorded in `APT_FAILED`.
 - ✅ **Closed 2026-10-05 (eleventh pass): run 5 is FULLY CLEAN, and the two mechanisms a
   green run cannot prove were proven by deliberate fault injection.**
   Run 5 (`667b94a`, clean snapshot, umask 0007): **115 passed, 0 warnings, 0 failed**,
