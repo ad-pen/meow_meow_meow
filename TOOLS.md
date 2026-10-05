@@ -4,7 +4,7 @@ Everything the setup scripts in this repo install on a fresh Kali box, grouped b
 who uses it. Generated from `start.sh`, `all.sh` and `ad.sh` — if you change an
 install line in those, update this file in the same commit.
 
-**Src** column: **S** = `start.sh` · **A** = `all.sh` · **D** = `ad.sh` · **I** = `all.sh --ismael`
+**Src** column: **S** = `start.sh` · **A** = `all.sh` · **D** = `ad.sh` · **I** = `all.sh --mobile` (formerly `--mobile`)
 
 Run order: `start.sh` → (`all.sh` and the jVision server can run in parallel). `all.sh` includes the AD section — there is no third step.
 The Windows box is independent: `windows.ps1`, during prep, while egress exists.
@@ -17,7 +17,7 @@ see its header. Before the event, build against `REHEARSAL.md`.
 | `start.sh` | bootstrap: base packages, docker, desktop, command logging + terminal uniform |
 | `all.sh` | **the whole build** (~35 min): web, cloud, OT, reporting, Burp + its logging extension, **and AD/internal**. One apt phase, one verification pass, one summary |
 | `all.sh --ad-only` · `--no-ad` | run only / skip the AD section |
-| `all.sh --ismael` | the above **plus** the mobile kit and the nuclei-templates clone |
+| `all.sh --mobile` | the above **plus** the mobile kit and the nuclei-templates clone. `--mobile` still works as an alias |
 | `ad.sh` | **wrapper → `all.sh --ad-only`.** Kept because the name is in muscle memory and the printed checklist |
 | `windows.ps1` | the Windows box: Burp, Snaffler, BloodHound 4.3.1 + Neo4j 4.4.19 |
 | `smol-all.sh` | emergency rebuild, critical path only (~5 min) |
@@ -52,17 +52,17 @@ operator needs them:
 
 ```
 bash all.sh            # full standard suite
-bash all.sh --ismael   # the above + mobile kit + nuclei-templates  (~2.3 GB extra)
+bash all.sh --mobile   # the above + mobile kit + nuclei-templates  (~2.3 GB extra)
 bash all.sh --help
 ```
 
 Deliberately the *only* role: splitting further costs more in "which flag do I need
 again?" on engagement morning than it saves in bandwidth.
 
-⚠️ **If nobody runs `--ismael`, nobody has nuclei templates offline.** `nuclei` itself
+⚠️ **If nobody runs `--mobile`, nobody has nuclei templates offline.** `nuclei` itself
 is always installed, but on first use it tries to download its own template set to
 `~/.local/nuclei-templates`, which needs internet egress. On an isolated engagement
-network that fetch fails. Either run `--ismael` on one box and copy the directory
+network that fetch fails. Either run `--mobile` on one box and copy the directory
 across, or run `nuclei -update-templates` while egress still exists.
 
 ---
@@ -74,7 +74,7 @@ across, or run `nuclei -update-templates` while egress still exists.
 | **Burp Suite Community** | A | 🆕 **No longer the apt package.** Installed from PortSwigger's official *latest community* download (`install_burp_latest` in `lib.sh`) → `/opt/burpsuite/`, launcher `/usr/local/bin/burpsuite`, plus a desktop entry for the xRDP session. ~**650 MB**. Edition is unambiguous, which settles the old "is the apt package Community?" question — Pro is banned. Installed **before** `burp_logging.sh` runs, which is now also in `all.sh` |
 | `default-jdk` | A | 🆕 **Required by Burp and `openjdk-11-jdk` does not cover it.** Measured on 2026.3.3: `burp/StartBurp` is class-file **major 65 = Java 21**, and Java 17 fails with `UnsupportedClassVersionError ... class file version 65.0`. `openjdk-11-jdk` stays for ysoserial. The launcher picks a JVM ≥ 21 rather than trusting `java` |
 | Burp CPTC Engagement Logger + `jython-standalone-2.7.3.jar` | S | → `~/.BurpSuite/`, auto-load patched into `UserConfig*.json` |
-| `nuclei` | A | templates are **`--ismael` only** — see the warning above |
+| `nuclei` | A | templates are **`--mobile` only** — see the warning above |
 | `nuclei-templates` | **I** | clone → `~/dropzone/nuclei-templates`; **731 MB, full history** |
 | `jwt_tool` | A | clone → `~/dropzone/jwt_tool`; run `python3 ~/dropzone/jwt_tool/jwt_tool.py` |
 | `ysoserial` | A | **Java deserialisation gadget chains.** Not in Kali's repos, so it is a pinned jar → `~/dropzone/ysoserial-all.jar`. Run `java -jar ...`; needs the JRE from `openjdk-11-jdk` |
@@ -248,7 +248,7 @@ Everything above the `azure-cli` line is AWS-only, which was the hole: CPTC's ow
 infrastructure is an Entra/M365 tenant, deliverables live in M365, and the CPTC 12
 client was identified *through* its Azure tenant.
 
-## Mobile — `--ismael` only
+## Mobile — `--mobile` only
 
 | Tool | Src | Notes |
 |---|---|---|
@@ -350,15 +350,15 @@ include base packages a real VDI may already have, so they are upper bounds.
 | Item | Download | On disk | Where |
 |---|---|---|---|
 | `kali-desktop-xfce` + `xorg` + `xrdp` | **~2.2 GB** (2083 pkgs) | — | `start.sh` |
-| Android Studio | **1.5 GB** | ~4 GB | `all.sh --ismael` |
-| `nuclei-templates` clone | **731 MB** | 731 MB | `all.sh --ismael` |
+| Android Studio | **1.5 GB** | ~4 GB | `all.sh --mobile` |
+| `nuclei-templates` clone | **731 MB** | 731 MB | `all.sh --mobile` |
 | `seclists` | 519 MB | 1.85 GB | `all.sh` |
 | **Burp Suite Community (jar)** | **653 MB** | 653 MB | `all.sh` |
 | `libreoffice-writer` | 333 MB (419 deps) | — | `all.sh` |
 | `metasploit-framework` | 258 MB | 599 MB | `all.sh` |
 | `bloodhound` + `neo4j` | 198 MB | 404 MB | `ad.sh` |
 | `azure-cli` | 175 MB (284 deps) | — | `all.sh` |
-| `jadx` | 69 MB | 75 MB | `all.sh --ismael` |
+| `jadx` | 69 MB | 75 MB | `all.sh --mobile` |
 | `golang` + compiling 4 Go tools | 42 MB + CPU | — | `all.sh` |
 | **Windows payload set** (19 pinned artifacts) | **~45 MB** | ~45 MB | `ad.sh` |
 | ↳ heaviest three: `LaZagne` 10 MB · `ligolo-proxy` 8 MB · `adPEAS` 5.8 MB | | | |
@@ -383,7 +383,7 @@ Two notes worth keeping:
 | `/usr/local/bin/` | `chisel`, `upshell`, `kerbrute`, `windapsearch`, `azurehound`, `android-studio`, `ligolo-proxy` |
 | `C:\BloodHound\` | *(Windows box)* BloodHound 4.3.1, Neo4j 4.4.19, `neo4j-credentials.txt` |
 | `~/pre-change-security-state.txt` | *(Windows box)* Defender/firewall state before `windows.ps1` touched it |
-| `/opt/android-studio/` | Android Studio (`--ismael`) |
+| `/opt/android-studio/` | Android Studio (`--mobile`) |
 | `~/go/bin/` | `httpx`, `httprobe`, `subfinder`, `waybackurls` |
 | `/usr/share/wordlists/` | `rockyou.txt`, `kali-wordlists/` |
 | `/usr/share/seclists/` | SecLists |
@@ -401,10 +401,10 @@ Two notes worth keeping:
 
 ## Counts
 
-65 apt in `all.sh` main list + 8 reporting + `azure-cli` + Sublime · 4 more under `--ismael` ·
-**20** apt in `ad.sh` (+2 mono) · 17 apt in `start.sh` ·
+65 apt in `all.sh` main list + 8 reporting + `azure-cli` + Sublime · 4 more under `--mobile` ·
+**20** apt in `ad.sh` (+2 mono) · 14 apt in `start.sh` ·
 8 pip (A) + 1 pip (I) + 4 pip (D) · 4 Go ·
-**33 pin-manifest artifacts** (all hash-verified) · **21 `fetch_pinned` + 12 `clone_pinned` in `ad.sh`** ·
+**32 pin-manifest artifacts** (all hash-verified; `powerup` removed) · **21 `fetch_pinned` + 12 `clone_pinned` in `ad.sh`** ·
 3 pinned artifacts in `windows.ps1` + 6 choco packages.
 
 ## Gaps and open items
@@ -445,8 +445,95 @@ Two notes worth keeping:
     entries without re-downloading Android Studio's 1.5 GB.
 - **Commented out, not installed:** Sliver C2, upstream Neo4j apt repo,
   `statistically-likely-usernames`, NaturalT314 ToolBox.
-- ✅ **Closed:** the mobile gap (now `--ismael`), the `ldap-utils` gap that `smol-all.sh`
+- ✅ **Closed:** the mobile gap (now `--mobile`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-05 (eighth pass): a teammate's independent review of his own run,
+  triaged against our two VM runs.** He re-found two bugs we had already fixed (`stat -c %s`
+  on the Burp symlink; the PrivescCheck content sniff) — independent confirmation of both
+  diagnoses. Of the rest:
+  - 🔴 **The verification was lying in three more places, and his diagnosis of the worst
+    one was incomplete.** `opcattack`'s check pattern was `usage|opcattack|error`, and the
+    build printed `[!] opcattack dependencies failed - it may not run` immediately followed
+    by `[+] opcattack verified`. Running it by hand gives a `Traceback`. He blamed `error`;
+    the output actually matched on **`opcattack`**, which appears in the traceback's own
+    file path (`/home/kali/dropzone/opcattack/opcattack.py`) — so removing only `error`
+    would not have fixed it. **Rule now applied: a verification pattern must never contain
+    a word that appears in a failure message or in the tool's own path.** Narrowed to
+    `usage`, which argparse prints only if the script imported. `error` also dropped from
+    PKINITtools and krbrelayx, where it matched every Python exception ending in `Error`.
+  - 🔴 **Two check commands had gone stale and were invisible.** `gobuster version` is not
+    a subcommand — it prints `No help topic for 'version'`, which contains no digits
+    (`gobuster --version` → `gobuster version 3.8.2`). `evil-winrm -h` prints its banner
+    **only to a TTY**, so under the build's redirection it emitted nothing. Both sat in
+    `Warnings: 2` because `_run_check` classifies a pattern mismatch as a warning, and a
+    count is not a diagnosis. `WARN_DETAIL[]` now names every warning in the summary.
+  - 🔴 **`usermod -aG docker "$(id -un)"` gave the docker group to ROOT under sudo**, so the
+    operator never got it and later hit `permission denied on /var/run/docker.sock` bringing
+    up jVision — while the build had printed "User added to docker group". Now `$CPTC_USER`.
+    The old comment was right that `$USER` is unsafe under `set -u` and wrong that
+    `id -un` was the answer.
+  - 🔴 **`terminal_uniform.sh` and `burp_logging.sh` ended their home resolver with
+    `printf '%s\n' "$USER_HOME"`** — the variable the function exists to compute, so
+    circular: unset (and `set -u` aborts) or empty. The other five copies always used
+    `$HOME`. Only reachable standalone from outside `/home/*`, which is exactly the case
+    those two scripts support.
+  - 🔴 **`start.sh` installed 15 packages in one `apt-get` with `else exit 1`**, so one bad
+    package took down the desktop install, the command logging and the terminal uniform —
+    none of which relate to the package that failed. Now one package per call, non-fatal,
+    with the existing per-tool verification deciding whether the box is usable.
+  - 🔴 **Kali ships its own `burpsuite` apt package** (2026.3.2-0kali1) with its own menu
+    entry. This is an **evidence** problem, not tidiness: the operator picks "Burp Suite
+    Community" from the application menu, gets Kali's copy, and nothing lands in
+    `~/.burp_history_readable`. `start.sh` now purges it. Found while confirming this: our
+    own `burpsuite.desktop` was `0640` from the same umask bug as the jar, so our menu entry
+    was the one that did not appear — now explicitly `0644`.
+  - **`~/go/bin` was APPENDED to PATH**, so `/usr/bin` won and every Go binary we had just
+    built was unreachable; and `go_install` guarded on `command -v`, which Kali's packaged
+    `httpx`/`subfinder` satisfy, so the build skipped the install and the distro version
+    won. Now prepended, persisted into both rc files, and guarded only on
+    `[ -x $GOPATH/bin/$bin ]`.
+  - **Newest-wins for distro packages**: `apt_install` no longer skips on `dpkg -s`; present
+    packages get `--only-upgrade`. Deliberately scoped to the ~100 packages we name and
+    **not** `apt full-upgrade` — that was 1389 packages on the test box and is what dragged
+    Python 3.13 → 3.14 mid-build and broke pwntools and icspacket. `fetch_pinned` is
+    deliberately left alone: "always newest" and a pin manifest are opposite goals.
+  - **Pins:** `winpeas` 20241011 → **20261003-ea9b2e92** (upstream's latest, sha re-computed);
+    `linpeas` org `carlospolop` → `peass-ng` and `sharphound_legacy`
+    `BloodHoundAD` → `SpecterOps` — both old URLs still 302 today, so these are pre-emptive,
+    since an org redirect dies the moment someone registers the abandoned name.
+  - 🔴 **`chisel`: his advice was wrong and I did not follow it.** He said bump to v1.11.8
+    and avoid v1.12.x because "those tags ship no linux binary, the URL 404s". v1.12.0
+    publishes **72 linux assets**, `chisel_1.12.0_linux_amd64.gz` returns HTTP 206 at
+    4,724,737 bytes, it is upstream's current release (2026-08-29), and its own notes call
+    it *"a reliability and security release … hardening unauthenticated surfaces"*.
+    Following the advice would have parked us one release behind the hardening one.
+    **Pinned to v1.12.0.** (The specific CVE ID he cites is not independently verifiable
+    from here; the version direction does not depend on it.)
+  - **`icspacket`: kept our fix, not his.** He proposed
+    `pipx install --python /usr/bin/python3.13` plus a standing "never run `apt autoremove`"
+    warning — a fix whose own precondition is a package apt wants to delete. Building from
+    the pinned tag produces a cp314 wheel and needs no 3.13 at all; run 1 proved it
+    (`[+] python: icspacket built from source (v0.3.1)`), so the autoremove warning is moot.
+  - **`asyncua` pinned `<2`** — this run installed 2.0.1, a major bump, and `uals`/`uaread`/
+    `uawrite` have not been re-tested against it days before a freeze.
+  - **`PowerUp.ps1` dropped.** PowerSploit archived 2021, no maintained fork, only ever
+    pinnable to an untagged `master` — the least trustworthy artifact in the manifest.
+    winPEAS and PrivescCheck cover the same ground from real releases. `powerview.ps1` from
+    the same archived repo **stays**: it has no equivalent replacement.
+  - **`--ismael` renamed `--mobile`**, old flag kept as a silent alias (same reasoning as
+    `ad.sh`). The mobile kit stays opt-in: it was already gated, so removing it would not
+    have made the default run any faster, which was the stated reason for asking.
+  - **IPv6**: his `Acquire::ForceIPv4=true` is right for his box and wrong unconditionally —
+    it would break an IPv6-only network, and nobody knows what the VDI provides. Now
+    auto-detected: force v4 only when there is no default v6 route. The test VM has one.
+  - **apt versions now recorded in `pins.lock`** (`record_apt_versions`). impacket, netexec,
+    certipy, bloodhound and neo4j were absent from the box-to-box diff entirely, which
+    matters more now that apt_install upgrades rather than skips.
+  - **Declined:** `pip_ensure --upgrade` for pure-pip tools. It is the same unreviewed-major-
+    bump risk he correctly flagged for `asyncua`, and it contradicts pinning that package.
+    Left as-is deliberately.
+  - **Agreed, no action:** the `chattr +i` on `qterminal.ini` stays (intentional, documented),
+    and BloodHound CE lagging upstream (9.7.0~rc4 vs 9.7.1) is Kali's call, not ours.
 - ✅ **Closed 2026-10-05 (seventh pass): `start.sh` → `all.sh` run end to end on the
   `clean-kali` VirtualBox snapshot**, driven by `VBoxManage guestcontrol`. Result **105
   passed / 3 warnings / 8 failed**. Two of the previous pass's fixes were confirmed

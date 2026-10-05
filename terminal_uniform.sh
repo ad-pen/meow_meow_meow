@@ -109,7 +109,13 @@ cptc_user_home() {
         home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
         if [ -n "$home" ] && [ -d "$home" ]; then printf '%s\n' "$home"; return 0; fi
     fi
-    printf '%s\n' "$USER_HOME"
+    # "$HOME", not "$USER_HOME" - this is the LAST resort inside the function that
+    # COMPUTES $USER_HOME, so referring to it here is circular: at this point it is
+    # either unset (and `set -u` aborts) or empty. lib.sh and the other four copies
+    # always had $HOME here; these two drifted. Only reachable when the script is
+    # run from outside /home/* with no SUDO_USER, but that is exactly the standalone
+    # case these two scripts are written to support.
+    printf '%s\n' "$HOME"
 }
 USER_HOME="${USER_HOME:-$(cptc_user_home)}"
 CPTC_USER="$(stat -c %U "$USER_HOME" 2>/dev/null || id -un)"

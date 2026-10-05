@@ -53,18 +53,18 @@ lock for its whole package phase).
 
 ```bash
 bash all.sh              # everything. This is what almost everyone runs.
-bash all.sh --ismael     # + mobile kit + nuclei-templates   (~2.3 GB extra)
+bash all.sh --mobile     # + mobile kit + nuclei-templates   (~2.3 GB extra)
 bash all.sh --ad-only    # ONLY the AD/internal section (what ad.sh used to do)
 bash all.sh --no-ad      # skip AD/internal (~650 MB: BloodHound CE, neo4j, payloads)
 bash all.sh --help
 ```
 
 The default installs everything, deliberately — nobody should have to remember a
-flag on engagement morning. `--ismael` exists only because two items dominate the
+flag on engagement morning. `--mobile` (formerly `--ismael`, still accepted) exists only because two items dominate the
 build's weight while one operator needs them; `--ad-only` and `--no-ad` exist for
 the two cases where that actually matters.
 
-⚠️ If nobody runs `--ismael`, nobody has nuclei templates offline — `nuclei`
+⚠️ If nobody runs `--mobile`, nobody has nuclei templates offline — `nuclei`
 downloads them on first use, which fails without egress.
 
 ### Lost a box mid-engagement

@@ -25,7 +25,7 @@ own_user "$LOG_FILE" 2>/dev/null
 # ---------------------------------------------------------------------------
 # ROLES
 # With no arguments this behaves exactly as it always did - the full suite.
-# --ismael ADDS the two heaviest things in the build, which only the mobile/AI
+# --mobile ADDS the two heaviest things in the build, which only the mobile/AI
 # owner actually needs and which everyone else was previously paying for:
 #   * the mobile kit incl. Android Studio   ~1.6 GB download
 #   * the nuclei-templates clone            ~731 MB (full history)
@@ -33,23 +33,28 @@ own_user "$LOG_FILE" 2>/dev/null
 # stays default-on, because splitting further costs more in "which flag do I
 # need again?" on engagement morning than it saves in bandwidth.
 # ---------------------------------------------------------------------------
-WANT_ISMAEL=0
+WANT_MOBILE=0
 WANT_AD=1          # the AD section is ON by default - see --no-ad below
 WANT_REST=1        # everything that is not the AD section
 for arg in "$@"; do
     case "$arg" in
-        --ismael) WANT_ISMAEL=1 ;;
+        --mobile) WANT_MOBILE=1 ;;
+        # --ismael is the old name for --mobile. Kept working rather than removed,
+        # for the same reason ad.sh still exists: it is in muscle memory and on the
+        # printed on-site checklist, and engagement morning is the worst time to
+        # find out a flag you have typed all season is gone.
+        --ismael) WANT_MOBILE=1 ;;
         --ad-only) WANT_REST=0 ;;
         --no-ad)   WANT_AD=0 ;;
         -h|--help)
             cat <<'USAGE'
-Usage: all.sh [--ismael] [--ad-only | --no-ad]
+Usage: all.sh [--mobile] [--ad-only | --no-ad]
 
   (no arguments)   The whole build: base, web, cloud, OT, reporting AND the
                    AD/internal tooling that used to live in a separate ad.sh.
                    This is what almost everyone should run.
 
-  --ismael         ALSO install the mobile kit (jadx, apktool, adb, frida-tools,
+  --mobile         ALSO install the mobile kit (jadx, apktool, adb, frida-tools,
                    Android Studio) and clone nuclei-templates.
                    Adds roughly 2.3 GB of downloads. Mobile/AI owner only.
 
@@ -61,6 +66,8 @@ Usage: all.sh [--ismael] [--ad-only | --no-ad]
                    will not touch the internal network.
 
   -h, --help       Show this and exit.
+
+  (--ismael is still accepted as an alias for --mobile.)
 
 ad.sh is now a thin wrapper that calls this script with --ad-only, so old habits
 and the printed checklist still work.
@@ -328,9 +335,17 @@ apt_install \
     python3-pytesseract python3-pymupdf python3-fitz libreoffice-writer
 
 print_status "Adding user to docker group..."
-# "$(id -un)" not "$USER": with 'set -u' an unset USER (sudo -i, cron, some non-login
-# shells) aborts the whole script with "USER: unbound variable".
-if sudo usermod -aG docker "$(id -un)"; then
+# "$CPTC_USER", not "$USER" and not "$(id -un)".
+#   "$USER"      - with 'set -u' an unset USER (sudo -i, cron, some non-login
+#                  shells) aborts the whole script with "USER: unbound variable".
+#   "$(id -un)"  - under `sudo bash all.sh` this is ROOT. The docker group then
+#                  went to root, who already has access by fiat, and the OPERATOR
+#                  never got it. They later hit "permission denied on
+#                  /var/run/docker.sock" bringing up jVision with no idea why,
+#                  because the build had printed "User added to docker group".
+# $CPTC_USER is resolved from this script's own path, so it names the operator
+# whether or not sudo is in play.
+if sudo usermod -aG docker "$CPTC_USER"; then
     print_success "User added to docker group (logout/login required)"
 else
     print_warning "Failed to add user to docker group"
@@ -444,7 +459,13 @@ print_status "Downloading privilege escalation scripts..."
 # URLs, versions and expected hashes now live in lib.sh's pin manifest, so the
 # same artifact cannot be fetched from two different URLs by two scripts.
 fetch_pinned linpeas          $USER_HOME/dropzone/privesc/linpeas.sh
-fetch_pinned powerup          $USER_HOME/dropzone/privesc/PowerUp.ps1
+# PowerUp.ps1 REMOVED. PowerSploit was archived by its authors in 2021, has no
+# maintained fork, and was only ever pinned to an untagged `master` - so it was
+# the least trustworthy artifact in the manifest. Everything it finds (unquoted
+# service paths, weak service ACLs, AlwaysInstallElevated, modifiable binaries)
+# is covered by winPEAS and PrivescCheck, both of which are current and pinned to
+# real releases. powerview.ps1 from the same archived repo is kept on purpose:
+# it has no equivalent replacement.
 fetch_pinned winpeas          $USER_HOME/dropzone/privesc/winpeas.exe
 fetch_pinned privesc_ps1      $USER_HOME/dropzone/privesc/privesc.ps1
 fetch_pinned privesccheck     $USER_HOME/dropzone/privesc/PrivescCheck.ps1
@@ -578,8 +599,8 @@ fi
 # nuclei-templates is a FULL-HISTORY clone of a 731 MB repository - by a wide
 # margin the biggest git operation in this script. clone_pinned only passes
 # --depth 1 when it is given a tag, and this call has none.
-if [ "$WANT_ISMAEL" -eq 1 ]; then
-    print_status "Cloning nuclei templates (--ismael; ~731 MB)..."
+if [ "$WANT_MOBILE" -eq 1 ]; then
+    print_status "Cloning nuclei templates (--mobile; ~731 MB)..."
     cd $USER_HOME/dropzone
     if clone_pinned nuclei-templates https://github.com/projectdiscovery/nuclei-templates.git \
             "$USER_HOME/dropzone/nuclei-templates"; then
@@ -588,11 +609,11 @@ if [ "$WANT_ISMAEL" -eq 1 ]; then
         fin_msg 'Nuclei Templates'
     fi
 else
-    print_status "Skipping the nuclei-templates clone (~731 MB) - run with --ismael to get it."
+    print_status "Skipping the nuclei-templates clone (~731 MB) - run with --mobile to get it."
     print_warning "  nuclei itself IS installed. On first use it tries to download its own"
     print_warning "  template set to ~/.local/nuclei-templates, which needs internet egress."
     print_warning "  If the engagement network is isolated, that fetch will fail and nuclei"
-    print_warning "  will have no templates. Either run --ismael on one box and copy the"
+    print_warning "  will have no templates. Either run --mobile on one box and copy the"
     print_warning "  directory across, or run 'nuclei -update-templates' while you still"
     print_warning "  have egress."
 fi
@@ -633,7 +654,30 @@ fi
 
 print_status "Installing additional useful Go tools..."
 export GOPATH=$USER_HOME/go
-export PATH=$PATH:$GOPATH/bin
+# PREPEND, not append. This was `PATH=$PATH:$GOPATH/bin`, which puts /usr/bin
+# first - so on any box where Kali already packages a tool we also `go install`
+# (httpx, subfinder, nuclei...), the DISTRO binary won and the freshly built one
+# we just spent minutes on was unreachable. Prepending makes the newer build win,
+# which is the whole point of installing it.
+export PATH=$GOPATH/bin:$PATH
+
+# ...and persist it, because the export above dies with this shell. Without this
+# the operator's next terminal has no ~/go/bin at all and the go tools simply are
+# not there. Idempotent: keyed on a marker string, so re-runs do not stack up.
+for rc in "$USER_HOME/.zshrc" "$USER_HOME/.bashrc"; do
+    [ -f "$rc" ] || continue
+    if ! grep -q 'cptc go+pipx PATH' "$rc" 2>/dev/null; then
+        {
+            echo ''
+            echo '# cptc go+pipx PATH - prepended so locally built tools beat the distro copies'
+            echo 'export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"'
+        } >> "$rc"
+        print_success "PATH for go/pipx added to $(basename "$rc")"
+    else
+        print_success "PATH for go/pipx already in $(basename "$rc")"
+    fi
+done
+own_user "$USER_HOME/.zshrc" "$USER_HOME/.bashrc" 2>/dev/null
 
 # go_install lives in lib.sh. The module path no longer carries the @version -
 # it is the third argument, so these can be pinned without editing the path.
@@ -661,7 +705,12 @@ go_install httpx       github.com/projectdiscovery/httpx/cmd/httpx
 print_status "Installing OT/ICS tooling (read-only doctrine - see comments)..."
 cd $USER_HOME/dropzone
 
-pip_ensure asyncua asyncua        # OPC-UA client library; also opcattack's dependency
+# PINNED BELOW 2.x. This run installed asyncua 2.0.1 - a major version bump - and
+# the OPC-UA client utilities we actually use on the day (uals / uaread / uawrite)
+# have not been re-tested against it. A major bump landing untested days before a
+# repo freeze is not a risk worth taking for a tool nobody will have time to debug
+# on site. Re-test the three utilities, then lift the ceiling deliberately.
+pip_ensure asyncua "asyncua<2"    # OPC-UA client library; also opcattack's dependency
 
 # icspacket is the broad-coverage one: DNP3 (IEEE 1815), MMS (ISO 9506) + IEC 61850,
 # IEC 60870-5-104, EtherNet/IP (CIP), BACnet/IP, plus Modbus and OPC-UA which it
@@ -730,13 +779,13 @@ fi
 fin_msg 'OT/ICS Tools'
 
 # ---------------------------------------------------------------------------
-# MOBILE  (--ismael only)
+# MOBILE  (--mobile only)
 # ---------------------------------------------------------------------------
 # Per the KB this is a TIME-BOXED HEDGE, not a discipline: there is no evidence
 # mobile has ever been in scope, and the useful flow is ~90 minutes of
 # apktool -> jadx -> grep -> hand the endpoint list to the web team.
-if [ "$WANT_ISMAEL" -eq 1 ]; then
-    print_status "Installing mobile tooling (--ismael)..."
+if [ "$WANT_MOBILE" -eq 1 ]; then
+    print_status "Installing mobile tooling (--mobile)..."
     # jadx pulls default-jre and is ~69 MB; the other three are under 1 MB together.
     apt_install jadx adb apktool openssl
     pip_ensure frida frida-tools
@@ -763,7 +812,7 @@ if [ "$WANT_ISMAEL" -eq 1 ]; then
     fi
     fin_msg 'Mobile Tools'
 else
-    print_status "Skipping the mobile kit - run with --ismael for jadx/apktool/adb/frida + Android Studio."
+    print_status "Skipping the mobile kit - run with --mobile for jadx/apktool/adb/frida + Android Studio."
 fi
 
 fi   # end of "$WANT_REST" install block
@@ -1319,7 +1368,10 @@ if [ "$WANT_REST" -eq 1 ]; then
 print_status "Checking core scanning tools..."
 check_tool "nmap"       "nmap --version"        "nmap version"
 check_tool "masscan"    "masscan --version"     "masscan"
-check_tool "gobuster"   "gobuster version"      "[0-9]+\.[0-9]+"
+# `gobuster version` is NOT a subcommand - it prints "No help topic for 'version'",
+# which has no digits in it, so this check has been quietly warning for a while.
+# `gobuster --version` prints "gobuster version 3.8.2". Verified on Kali 2026.2.
+check_tool "gobuster"   "gobuster --version"    "[0-9]+\.[0-9]+"
 check_tool "ffuf"       "ffuf -V"               "ffuf"
 check_tool "feroxbuster" "feroxbuster --version" "feroxbuster"
 
@@ -1393,14 +1445,13 @@ print_status "Checking privilege escalation scripts..."
 check_script  "$USER_HOME/dropzone/privesc/linpeas.sh" "linpeas.sh"
 check_payload "$USER_HOME/dropzone/privesc/winpeas.exe"      "winpeas.exe"      "^MZ"                 100000 winpeas
 check_payload "$USER_HOME/dropzone/pspy64"                   "pspy64"           "ELF"                 1000000 pspy64
-check_payload "$USER_HOME/dropzone/privesc/PowerUp.ps1"      "PowerUp.ps1"      "function|param"      10000 powerup
 check_payload "$USER_HOME/dropzone/privesc/PrivescCheck.ps1" "PrivescCheck.ps1" "function|param"      10000 privesccheck
 check_payload "$USER_HOME/dropzone/privesc/privesc.ps1"      "privesc.ps1"      "function|param|write" 5000 privesc_ps1
 check_payload "$USER_HOME/dropzone/username-anarchy"         "username-anarchy" "ruby|#!"              5000
 check_script  "/usr/local/bin/upshell" "upshell"
 
 print_status "Checking cloned repos..."
-if [ "$WANT_ISMAEL" -eq 1 ]; then
+if [ "$WANT_MOBILE" -eq 1 ]; then
     check_file "$USER_HOME/dropzone/nuclei-templates" "nuclei-templates"
 fi
 
@@ -1418,11 +1469,22 @@ check_pymod roadtools "ROADtools (roadlib)"
 print_status "Checking OT/ICS tooling..."
 check_pymod asyncua "asyncua (OPC-UA)"
 check_pymod icspacket "icspacket (DNP3/MMS/IEC-104/CIP/BACnet)"
-check_cmd  "opcattack" "python3 $USER_HOME/dropzone/opcattack/opcattack.py --help" "usage|opcattack|error"
+# PATTERN NARROWED TO 'usage' ONLY, and this is why it matters. It used to be
+# "usage|opcattack|error" and it passed a box where the tool was broken:
+#     [!] opcattack dependencies failed - it may not run      <- the build knew
+#     [+] opcattack verified                                  <- and said this
+# Running it by hand gives a Traceback ("from attacks import *" -> ImportError).
+# That output matched on TWO counts: 'opcattack' appears in the traceback's own
+# file path (/home/kali/dropzone/opcattack/opcattack.py), and 'error' matches
+# every Python exception name ending in Error, case-insensitively. A verification
+# pattern must never contain a word that appears in a failure message or in the
+# tool's own path. argparse prints "usage:" only when the script actually
+# imported, which is exactly the thing being tested.
+check_cmd  "opcattack" "python3 $USER_HOME/dropzone/opcattack/opcattack.py --help" "usage"
 check_tool "modbuster" "modbuster --help"       "modbus|usage"
 
-if [ "$WANT_ISMAEL" -eq 1 ]; then
-    print_status "Checking mobile tooling (--ismael)..."
+if [ "$WANT_MOBILE" -eq 1 ]; then
+    print_status "Checking mobile tooling (--mobile)..."
     check_tool "jadx"    "jadx --version"    "[0-9]+\\.[0-9]"
     check_tool "apktool" "apktool --version" "[0-9]+\\.[0-9]"
     check_tool "adb"     "adb version"       "android debug bridge|[0-9]+\\.[0-9]"
@@ -1453,7 +1515,11 @@ if [ "$WANT_AD" -eq 1 ]; then
 print_status "Checking AD / internal tooling..."
 check_tool "bloodhound" "dpkg -s bloodhound" "install ok installed"
 check_tool "neo4j"      "dpkg -s neo4j"      "install ok installed"
-check_tool "evil-winrm" "evil-winrm -h"      "evil-winrm|usage"
+# `evil-winrm -h` prints its banner only when stdout is a TTY - under the build's
+# own redirection it emits nothing at all, so the pattern never matched and this
+# sat as a permanent "suspect" warning. `evil-winrm --version` prints "v3.9"
+# regardless. Verified on evil-winrm 3.9-0kali2.
+check_tool "evil-winrm" "evil-winrm --version"  "v?[0-9]+\.[0-9]+"
 check_tool "responder"  "responder -h"       "responder|usage"
 check_tool "enum4linux" "enum4linux -h"      "enum4linux|usage"
 check_tool "kerbrute"   "kerbrute version"   "[0-9]+\.[0-9]"
@@ -1492,7 +1558,9 @@ check_repo "$USER_HOME/dropzone/SharpEfsPotato" "SharpEfsPotato"
 check_repo "$USER_HOME/dropzone/bloodyAD" "bloodyAD"
 # Running PKINITtools with -h imports minikerberos, so this proves the tool AND
 # its dependency in one go - the thing a file-existence check cannot tell you.
-check_cmd "PKINITtools" "python3 $USER_HOME/dropzone/PKINITtools/gettgtpkinit.py -h" "usage|error"
+# 'error' dropped for the same reason as opcattack: it matches the name of every
+# Python exception, so a traceback counted as a pass.
+check_cmd "PKINITtools" "python3 $USER_HOME/dropzone/PKINITtools/gettgtpkinit.py -h" "usage"
 
 # --- the collectors, and they are checked as a PAIR ------------------------
 # Both must exist, because the two viewers each need their own. A box with only
@@ -1501,7 +1569,7 @@ check_cmd "PKINITtools" "python3 $USER_HOME/dropzone/PKINITtools/gettgtpkinit.py
 check_tool "bloodhound-ce-python" "bloodhound-ce-python -h" "usage|bloodhound"
 
 check_repo "$USER_HOME/dropzone/krbrelayx" "krbrelayx"
-check_cmd  "krbrelayx printerbug" "python3 $USER_HOME/dropzone/krbrelayx/printerbug.py -h" "usage|error"
+check_cmd  "krbrelayx printerbug" "python3 $USER_HOME/dropzone/krbrelayx/printerbug.py -h" "usage"
 check_repo "$USER_HOME/dropzone/gMSADumper" "gMSADumper"
 check_repo "$USER_HOME/dropzone/KeyTabExtract" "KeyTabExtract"
 check_repo "$USER_HOME/dropzone/certighost" "Certighost PoC (CVE-2026-54121)"
@@ -1556,6 +1624,15 @@ else
     print_warning "$FAIL tools failed verification - check log file"
 fi
 
+# Name the warnings. "Warnings: 2" told nobody that gobuster's and evil-winrm's
+# check commands had gone stale, so they stayed stale.
+if [ ${#WARN_DETAIL[@]} -gt 0 ]; then
+    echo ""
+    print_warning "${#WARN_DETAIL[@]} check(s) only WARNED - the tool is present but unproven:"
+    for w in "${WARN_DETAIL[@]}"; do print_warning "  - $w"; done
+    print_warning "  Either the tool is broken or OUR check command has drifted. Both need a human."
+fi
+
 if [ ${#APT_FAILED[@]} -gt 0 ]; then
     echo ""
     print_warning "APT packages that FAILED to install: ${APT_FAILED[*]}"
@@ -1564,6 +1641,16 @@ fi
 
 # Last chance to hand back anything created while running as root.
 own_user "$USER_HOME/dropzone" "$USER_HOME/go" "$PINS_LOCK" 2>/dev/null
+
+# The apt-installed tools that actually decide how this box behaves. Recorded so
+# `pins.sh` can diff them box to box - they used to be absent from pins.lock
+# entirely, which made the diff misleading rather than merely incomplete.
+record_apt_versions \
+    impacket-scripts netexec certipy-ad evil-winrm \
+    bloodhound.py bloodhound-ce-python bloodhound neo4j \
+    python3-pwntools nuclei feroxbuster ffuf gobuster hashcat \
+    metasploit-framework responder seclists krb5-user freerdp3-x11 \
+    python3-impacket ldap-utils
 
 pin_summary
 
@@ -1594,9 +1681,9 @@ echo ""
 echo -e "${YELLOW}╔═══════════════════════════════════════════════════════╗${NC}"
 echo -e "${YELLOW}║   NEXT STEP                                           ║${NC}"
 echo -e "${YELLOW}╚═══════════════════════════════════════════════════════╝${NC}"
-if [ "$WANT_ISMAEL" -eq 0 ]; then
+if [ "$WANT_MOBILE" -eq 0 ]; then
     print_status "Mobile/AI owner: this run SKIPPED the mobile kit and nuclei-templates."
-    print_status "  Get them with: bash all.sh --ismael   (adds ~2.3 GB of downloads)"
+    print_status "  Get them with: bash all.sh --mobile   (adds ~2.3 GB of downloads)"
 fi
 if [ "$WANT_AD" -eq 0 ]; then
     print_status "This run SKIPPED the AD/internal section (--no-ad)."

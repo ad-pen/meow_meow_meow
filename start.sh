@@ -61,9 +61,20 @@ export DEBIAN_FRONTEND=noninteractive
 # DPkg::Lock::Timeout makes apt WAIT for the dpkg lock instead of failing
 # instantly - see the long note in lib.sh's apt_install, which was written after
 # five packages were silently lost to a few seconds of lock contention.
+# Only force IPv4 when there is no usable IPv6 route. A resolver that returns
+# AAAA on a box with no v6 route makes apt hang then fail per package (that is
+# how `seclists` died on one teammate's machine), but forcing v4 unconditionally
+# would break a genuinely IPv6-only network and we do not know what the
+# competition VDI provides. Same logic as lib.sh.
+if ip -6 route show default 2>/dev/null | grep -q .; then
+    APT_IPV4=""
+else
+    APT_IPV4="-o Acquire::ForceIPv4=true"
+fi
 APT_NI=(sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y
         -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
-        -o DPkg::Lock::Timeout=600)
+        -o DPkg::Lock::Timeout=600 $APT_IPV4)
+
 
 LOG_FILE="$USER_HOME/start_install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -139,6 +150,22 @@ Package: needrestart
 Pin: release *
 Pin-Priority: -1
 PIN
+# Kali's ISO ships its own `burpsuite` apt package (2026.3.2-0kali1 on the test
+# image) AND its own menu entry. all.sh installs PortSwigger's current jar to
+# /opt/burpsuite with the engagement logging extension wired in. Two Burps on one
+# box is not a tidiness problem, it is an EVIDENCE problem: the operator picks
+# "Burp Suite Community" out of the application menu, gets Kali's copy, and
+# nothing is written to ~/.burp_history_readable. Our /usr/local/bin/burpsuite
+# wins on PATH, but nobody launches a GUI tool from a terminal.
+print_status "Removing Kali's packaged Burp (we install PortSwigger's current jar)..."
+if dpkg -s burpsuite &>/dev/null; then
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get purge -y \
+        -o DPkg::Lock::Timeout=600 burpsuite \
+        && print_success "Kali's burpsuite package removed" \
+        || print_warning "Could not purge Kali's burpsuite (non-critical)"
+else
+    print_success "Kali's burpsuite package not present (ok)"
+fi
 
 print_status "Updating package lists..."
 if sudo apt-get update -o DPkg::Lock::Timeout=600; then
@@ -154,26 +181,44 @@ fi
 # for its whole apt phase, so a second terminal running 'apt install docker.io'
 # fails with "Could not get lock" until that phase ends. all.sh still lists both
 # packages; its apt_install does a dpkg -s check first, so they are a no-op there.
-print_status "Installing basic packages (python3, pip, nmap, docker)..."
-if "${APT_NI[@]}" \
-    python3 \
-    python3-pip \
-    python3-venv \
-    nmap \
-    git \
-    curl \
-    wget \
-    docker.io \
-    docker-compose \
-    python3-pwntools \
-    build-essential \
-    cmake \
-    pkg-config \
-    ninja-build; then
+# ONE PACKAGE PER apt-get CALL, and a failure here no longer aborts the script.
+# This used to be a single apt-get with all 15 names and `else exit 1`, which
+# meant ONE unavailable or broken package took down everything after it - the
+# desktop install, the command logging, the terminal uniform - none of which has
+# anything to do with the package that failed. The per-package verification loop
+# immediately below is what decides whether the box is usable, and it exits 1 on
+# a genuinely missing essential. (lib.sh's apt_install does the same thing for
+# all.sh; start.sh deliberately does not source lib.sh, so the loop is repeated
+# here rather than shared.)
+#
+# --only-upgrade when the package is already present: a stock Kali ISO ships many
+# of these at the version they were frozen at, and apt_install's old `dpkg -s` ->
+# skip meant the build never moved them forward. Present-but-older now gets
+# upgraded; present-and-current is a fast no-op.
+BASIC_PKGS=(python3 python3-pip python3-venv nmap git curl wget
+            docker.io docker-compose python3-pwntools
+            build-essential cmake pkg-config ninja-build)
+BASIC_FAILED=()
+print_status "Installing basic packages (${#BASIC_PKGS[@]} packages, one at a time)..."
+for pkg in "${BASIC_PKGS[@]}"; do
+    if dpkg -s "$pkg" &>/dev/null; then
+        if "${APT_NI[@]}" --only-upgrade "$pkg"; then
+            print_success "$pkg present (upgraded if newer was available)"
+        else
+            print_warning "$pkg present but could not be upgraded (keeping what is there)"
+        fi
+    elif "${APT_NI[@]}" "$pkg"; then
+        print_success "$pkg installed"
+    else
+        print_warning "$pkg FAILED to install"
+        BASIC_FAILED+=("$pkg")
+    fi
+done
+if [ ${#BASIC_FAILED[@]} -eq 0 ]; then
     print_success "Basic packages installed"
 else
-    print_error "Failed to install basic packages"
-    exit 1
+    print_warning "Could not install: ${BASIC_FAILED[*]}"
+    print_warning "  Continuing - the verification below decides if this box is usable."
 fi
 
 print_status "Verifying basic tool installations..."
@@ -198,7 +243,14 @@ if command -v docker &> /dev/null; then
         print_warning "Could not start the Docker daemon (non-critical)"
     fi
     # "$(id -un)" not "$USER": with 'set -u' an unset USER aborts the script.
-    if sudo usermod -aG docker "$(id -un)"; then
+    # "$CPTC_USER", not "$(id -un)". Under `sudo bash start.sh` id -un is ROOT, so
+    # the docker group was granted to root - who already has it by fiat - and the
+    # operator never got it. They then hit "permission denied on
+    # /var/run/docker.sock" bringing up jVision and have no idea why, because the
+    # build printed "User added to docker group". The earlier comment here was
+    # right that "$USER" is unsafe under set -u and wrong that id -un is the
+    # answer: $CPTC_USER is resolved from the script's own path.
+    if sudo usermod -aG docker "$CPTC_USER"; then
         print_success "User added to docker group (takes effect after re-login)"
     else
         print_warning "Failed to add user to docker group (non-critical)"
@@ -357,7 +409,7 @@ echo "    Windows opened before terminal_uniform.sh ran still show the old look.
 echo
 echo -e "${BLUE}[3] Install the full tool suite${NC} (heavy; run once per box)"
 echo "    bash \"$SCRIPT_DIR/all.sh\""
-echo "    Mobile/AI owner only:  bash \"$SCRIPT_DIR/all.sh\" --ismael"
+echo "    Mobile/AI owner only:  bash \"$SCRIPT_DIR/all.sh\" --mobile"
 echo "        adds the mobile kit + Android Studio + the nuclei-templates clone"
 echo "        (~2.3 GB extra). Everyone else does NOT need it."
 echo "    all.sh installs BURP and then wires in the logging extension, so Burp"

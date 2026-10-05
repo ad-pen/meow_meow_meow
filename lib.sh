@@ -98,15 +98,52 @@ HASH_MISMATCH=()   # artifacts whose sha256 did not match the manifest
 # Install apt packages ONE AT A TIME so a single failure is logged and skipped
 # instead of aborting the whole 'apt install a b c' transaction. Already-present
 # packages are detected with dpkg and skipped without hitting the network.
+# ---------------------------------------------------------------------------
+# IPv6 WITHOUT A ROUTE  - detect, do not assume
+# ---------------------------------------------------------------------------
+# A box whose resolver returns AAAA records but which has no usable IPv6 route
+# makes apt hang and then fail per-package; that is how `seclists` died on one
+# teammate's machine. The obvious fix, Acquire::ForceIPv4=true unconditionally,
+# is wrong: it would break a genuinely IPv6-only network, and we do not know what
+# the competition VDI gives us. So test for a default IPv6 route and only force
+# v4 when there is not one. The test VM HAS a v6 default route
+# ("default via fe80::2 dev eth0 proto ra"), so it is left alone there.
+if ip -6 route show default 2>/dev/null | grep -q .; then
+    APT_IPV4=""
+else
+    APT_IPV4="-o Acquire::ForceIPv4=true"
+fi
+
+# NEWEST-WINS FOR DISTRO PACKAGES.
+# This used to `dpkg -s` and skip, which meant every tool the Kali ISO already
+# shipped stayed at the ISO's version forever - impacket, netexec, certipy,
+# nuclei, the lot. A box built the week of the engagement was no newer than the
+# image. Present-but-older now gets --only-upgrade; present-and-current is a fast
+# no-op, so re-runs stay cheap.
+#
+# This is deliberately SCOPED to the ~100 packages we name. It is NOT
+# `apt full-upgrade`: that was 1389 packages on the test box, and it is what
+# dragged Python 3.13 -> 3.14 mid-build and broke both pwntools and icspacket.
+# Two tiers, on purpose - distro packages track current, PINNED artifacts
+# (fetch_pinned) stay at a reviewed version. Those are opposite goals and
+# fetch_pinned must not be "helpfully" made to chase latest.
 apt_install() {
     local pkg
     for pkg in "$@"; do
         if dpkg -s "$pkg" &>/dev/null; then
-            print_success "$pkg already installed"
+            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                   -o Dpkg::Options::=--force-confdef \
+                   -o Dpkg::Options::=--force-confold \
+                   -o DPkg::Lock::Timeout=600 \
+                   $APT_IPV4 --only-upgrade "$pkg"; then
+                print_success "$pkg present (upgraded if newer was available)"
+            else
+                print_warning "$pkg present but upgrade failed (keeping what is there)"
+            fi
         elif sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
                  -o Dpkg::Options::=--force-confdef \
                  -o Dpkg::Options::=--force-confold \
-                 -o DPkg::Lock::Timeout=600 "$pkg"; then
+                 -o DPkg::Lock::Timeout=600 $APT_IPV4 "$pkg"; then
             # 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
             # DEBIAN_FRONTEND, so without this, debconf prompts (docker.io's
             # "Remove all Docker data?", neo4j's preconfigure) appear and fail the
@@ -175,14 +212,22 @@ pip_ensure() {
 declare -A PIN_URL PIN_SHA PIN_VER
 
 # --- pinned by version already ---
-PIN_URL[winpeas]="https://github.com/peass-ng/PEASS-ng/releases/download/20241011-2e37ba11/winPEASx64.exe"
-PIN_VER[winpeas]="20241011-2e37ba11"; PIN_SHA[winpeas]="ea33954741d44c9f46ab6f40fed29acd2833b9fdcc33b3990fab573522f2e446"
+PIN_URL[winpeas]="https://github.com/peass-ng/PEASS-ng/releases/download/20261003-ea9b2e92/winPEASx64.exe"
+# 2024-10-11 -> 2026-10-03, which is upstream's latest release. sha re-computed.
+PIN_VER[winpeas]="20261003-ea9b2e92"; PIN_SHA[winpeas]="9c52005326108b71b3ac7ce87e3b414ec7eab7d5a45bd2371b7d5c0464c71326"
 
 PIN_URL[pspy64]="https://github.com/DominicBreuker/pspy/releases/download/v1.2.1/pspy64"
 PIN_VER[pspy64]="v1.2.1";             PIN_SHA[pspy64]="c93f29a5cc1347bdb90e14a12424e6469c8cfea9a20b800bc249755f0043a3bb"
 
-PIN_URL[chisel]="https://github.com/jpillora/chisel/releases/download/v1.10.1/chisel_1.10.1_linux_amd64.gz"
-PIN_VER[chisel]="v1.10.1";            PIN_SHA[chisel]="0525aa3c5d457f2a4075e66221d5125d434bedf15006d3271c213f5cd6ff2230"
+PIN_URL[chisel]="https://github.com/jpillora/chisel/releases/download/v1.12.0/chisel_1.12.0_linux_amd64.gz"
+# v1.10.1 -> v1.12.0. v1.12.0 is upstream's current release (2026-08-29) and its
+# own notes call it "a reliability and security release ... hardening
+# unauthenticated surfaces"; v1.11.5's notes mention the ACL work. NOTE: a review
+# recommended v1.11.8 specifically, on the grounds that "v1.12.x ships no linux
+# binary, the URL 404s" - that is not so. v1.12.0 publishes 72 linux assets and
+# chisel_1.12.0_linux_amd64.gz returns HTTP 206 at 4,724,737 bytes (checked
+# 2026-10-05), so there is no reason to sit a release behind the hardening one.
+PIN_VER[chisel]="v1.12.0";            PIN_SHA[chisel]="f3f180f1d93aa72cce4e6386f98cc06569a0146fbd65eb4423cf83e6434bcfe6"
 
 PIN_URL[kerbrute]="https://github.com/ropnop/kerbrute/releases/download/v1.0.3/kerbrute_linux_amd64"
 PIN_VER[kerbrute]="v1.0.3";           PIN_SHA[kerbrute]="710a9d2653c8bd3689e451778dab9daec0de4c4c75f900788ccf23ef254b122a"
@@ -191,11 +236,16 @@ PIN_URL[windapsearch]="https://github.com/ropnop/go-windapsearch/releases/downlo
 PIN_VER[windapsearch]="v0.3.0";       PIN_SHA[windapsearch]="15abbc5e2422158d64b4f604424972309fb79bb53b59bf5a527b16662d8636c1"
 
 # --- NOT pinned: these track a moving target. Pin them at the next rehearsal. ---
-PIN_URL[linpeas]="https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh"
+# org is peass-ng, not carlospolop. The old name still 302s today (both return
+# 206), so this was not broken - but it is a redirect we do not control, and
+# line 178 above already used peass-ng, so the two were inconsistent.
+PIN_URL[linpeas]="https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh"
 PIN_VER[linpeas]="latest";            PIN_SHA[linpeas]="795e315c42c58e27841e4ee2798a73a9309694f0454b34707299bb090e04b98d"
 
-PIN_URL[powerup]="https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/master/Privesc/PowerUp.ps1"
-PIN_VER[powerup]="master";            PIN_SHA[powerup]="9d59d4c128570eb80c0e8d13e2185030f93d965278b203c91dd196b2e1d3cd22"
+# powerup REMOVED 2026-10-05: PowerSploit archived 2021, no maintained fork, only
+# ever pinnable to an untagged master. winPEAS + PrivescCheck cover the same
+# ground and are pinned to real releases. powerview_ps1 from the same repo stays -
+# it has no replacement.
 
 PIN_URL[privesc_ps1]="https://raw.githubusercontent.com/enjoiz/Privesc/refs/heads/master/privesc.ps1"
 PIN_VER[privesc_ps1]="master";        PIN_SHA[privesc_ps1]="e61e343192305413e8275d0a9c75d76e0cf1d4beff1636846b6471718a6b94a6"
@@ -305,7 +355,10 @@ PIN_VER[accesschk]="current";        PIN_SHA[accesschk]="8ef5e3cf235bcf4ecdcf8b4
 # one in a hurry:
 #   ~/dropzone/windows/legacy/  -> SharpHound 1.1.1 -> BloodHound 4.3.1 on Windows
 #   ~/dropzone/windows/ce/      -> SharpHound 2.x   -> BloodHound CE on Kali
-PIN_URL[sharphound_legacy]="https://github.com/BloodHoundAD/SharpHound/releases/download/v1.1.1/SharpHound-v1.1.1.zip"
+# BloodHoundAD -> SpecterOps. As with linpeas the old URL still redirects (206
+# today), so this is pre-emptive: GitHub org redirects stop working the moment
+# anyone registers the abandoned name.
+PIN_URL[sharphound_legacy]="https://github.com/SpecterOps/SharpHound/releases/download/v1.1.1/SharpHound-v1.1.1.zip"
 PIN_VER[sharphound_legacy]="v1.1.1"; PIN_SHA[sharphound_legacy]="224d47658e0e7ddc256eb97725179a35e42fed02f7717cf5b62afbae26dcb36b"
 
 PIN_URL[sharphound_ce]="https://github.com/SpecterOps/SharpHound/releases/download/v2.17.0/SharpHound_v2.17.0_windows_x86.zip"
@@ -475,8 +528,14 @@ clone_pinned() {
 # it can be pinned later.
 go_install() {
     local bin=$1 mod=$2 ver=${3:-latest} out
-    if command -v "$bin" &>/dev/null || [ -x "${GOPATH:-$HOME/go}/bin/$bin" ]; then
-        print_success "$bin already installed (skip)"
+    # Guard ONLY on our own GOPATH binary, not on `command -v`.
+    # `command -v httpx` is satisfied by Kali's packaged httpx, so go install was
+    # skipped and the distro build - often a major version behind - was what the
+    # operator actually ran. The point of go_install is to get the current
+    # upstream binary; the fact that an older one exists under /usr/bin is not a
+    # reason to skip, it is the reason to bother.
+    if [ -x "${GOPATH:-$HOME/go}/bin/$bin" ]; then
+        print_success "$bin already installed in GOPATH (skip)"
         return 0
     fi
     if go install "${mod}@${ver}" 2>/dev/null; then
@@ -577,6 +636,13 @@ install_burp_latest() {
     # verification pass reported "Burp jar NOT found" on a complete download.
     sudo chmod 0755 "$BURP_DIR"
     sudo chmod 0644 "$jar"
+    # The STABLE name everything else refers to. Do not remove this again:
+    # install_burp_latest's own "already at the wanted version" check, the
+    # /usr/local/bin/burpsuite launcher's JAR= path, and all.sh's Burp
+    # verification all point at $BURP_DIR/burpsuite.jar, never at the versioned
+    # filename - that is the whole point of the symlink, since the version
+    # changes on every PortSwigger release.
+    sudo ln -sfn "$jar" "$BURP_DIR/burpsuite.jar"
     printf '%s\n' "$want" | sudo tee "$BURP_DIR/VERSION" >/dev/null
     sudo chmod 0644 "$BURP_DIR/VERSION"
     sha=$(sha256sum "$jar" 2>/dev/null | cut -d' ' -f1)
@@ -613,6 +679,11 @@ WRAPPER
 
     # Desktop entry, so Burp is launchable from the XFCE session start.sh sets up
     # over xRDP - which is the whole reason that desktop is installed.
+    # Mode set explicitly below for the same umask reason as the jar: at umask 0007
+    # `sudo tee` created this 0640 root:root, so the operator's own desktop could
+    # not read our menu entry - leaving only Kali's packaged Burp in the menu,
+    # which has no logging extension. That is the exact failure this entry exists
+    # to prevent.
     sudo tee /usr/share/applications/burpsuite.desktop >/dev/null <<'DESKTOP'
 [Desktop Entry]
 Type=Application
@@ -622,6 +693,7 @@ Exec=/usr/local/bin/burpsuite
 Terminal=false
 Categories=Development;Security;
 DESKTOP
+    sudo chmod 0644 /usr/share/applications/burpsuite.desktop
     fin_msg "Burp Suite Community $want"
     return 0
 }
@@ -644,6 +716,12 @@ DESKTOP
 # was live once and printed "X verified" and "X NOT working" for the same tool.
 PASS=0
 WARN=0
+# Which checks only WARNED, so they can be listed at the end. A pattern mismatch
+# is deliberately a warning rather than a failure (the tool does exist and did
+# run), but that meant two DRIFTED regexes - gobuster's `version` subcommand and
+# evil-winrm's tty-only banner - sat in the "Warnings: 2" line for an unknown
+# number of runs with nobody looking at which two. A count is not a diagnosis.
+WARN_DETAIL=()
 FAIL=0
 
 # _run_check <desc> <command> [pattern]
@@ -657,14 +735,14 @@ _run_check() {
     out=$(timeout 180 bash -c "$cmd" 2>&1); rc=$?
     if [ "$rc" -eq 124 ]; then
         print_warning "$desc TIMED OUT during verification"
-        WARN=$((WARN+1)); return 0
+        WARN=$((WARN+1)); WARN_DETAIL+=("$desc: timed out"); return 0
     fi
     if [ -n "$pat" ]; then
         if printf '%s' "$out" | grep -qaiE "$pat"; then
             print_success "$desc verified"; PASS=$((PASS+1))
         else
             print_warning "$desc ran but its output did not match /$pat/ - suspect"
-            WARN=$((WARN+1))
+            WARN=$((WARN+1)); WARN_DETAIL+=("$desc: output did not match /$pat/")
         fi
         return 0
     fi
@@ -672,7 +750,7 @@ _run_check() {
         print_success "$desc verified"; PASS=$((PASS+1))
     else
         print_warning "$desc is installed but FAILED to run (exit $rc)"
-        WARN=$((WARN+1))
+        WARN=$((WARN+1)); WARN_DETAIL+=("$desc: installed but exited $rc")
     fi
     return 0
 }
@@ -835,6 +913,22 @@ check_pymod() {
 }
 
 # Print the pin/verification summary. Callers run this next to the APT summary.
+# record_apt_versions - put the DISTRO tool versions in pins.lock too.
+# pins.lock existed to answer "why does my box behave differently from yours",
+# but it only ever held the artifacts we download by hand. The most load-bearing
+# tools on the box - impacket, netexec, certipy, bloodhound, neo4j - arrive via
+# apt and were completely invisible in a box-to-box diff. Now that apt_install
+# upgrades rather than skips, two boxes built a week apart can legitimately carry
+# different versions, which makes recording them more important, not less.
+record_apt_versions() {
+    local pkg ver
+    for pkg in "$@"; do
+        ver=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null)
+        [ -n "$ver" ] && record_pin "apt:$pkg" "$ver" "-" "dpkg"
+    done
+    return 0
+}
+
 pin_summary() {
     echo
     if [ ${#HASH_MISMATCH[@]} -gt 0 ]; then
