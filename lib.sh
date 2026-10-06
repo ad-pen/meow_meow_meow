@@ -92,6 +92,7 @@ fi
 # Install helpers - idempotent, and one failure never sinks a batch.
 # ---------------------------------------------------------------------------
 APT_FAILED=()      # apt packages that failed; callers report this at the end
+APT_STALE=()       # installed, but an available upgrade could not be fetched
 UNPINNED=()        # artifacts fetched without a version pin (see PINS below)
 HASH_MISMATCH=()   # artifacts whose sha256 did not match the manifest
 
@@ -114,6 +115,69 @@ else
     APT_IPV4="-o Acquire::ForceIPv4=true"
 fi
 
+# ONE place that actually runs apt-get, so every caller gets the same options.
+# Extra args (e.g. --only-upgrade) come first, package name last.
+#
+# 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
+# DEBIAN_FRONTEND, so without this, debconf prompts (docker.io's "Remove all
+# Docker data?", neo4j's preconfigure) appear and fail the non-interactive
+# install.
+# The two Dpkg::Options close the OTHER interactive path that DEBIAN_FRONTEND
+# does not cover: when a package ships a changed config file, dpkg stops and
+# asks keep/replace. --force-confdef plus --force-confold answers "keep what is
+# there" without asking, which is the right answer on a box we are building, and
+# means an install can never block waiting for someone who is not watching.
+#
+# Acquire::Retries=3 is here for measured reasons, not theory. Run 3 lost
+# libreoffice-writer outright to one unreachable mirror -
+#   E: Failed to fetch http://mirrors.netix.net/kali/pool/.../liborcus...
+#      Unable to connect to mirrors.netix.net:http: [IP: 87.121.121.4 80]
+# - and the verification then correctly reported "soffice NOT installed", so the
+# report-to-PDF path was silently gone. apt does not retry a failed fetch by
+# default; the same install succeeded by hand minutes later. Kali's mirror pool
+# is community-run and individual mirrors flake regularly.
+#
+# DPkg::Lock::Timeout=600 is NOT cosmetic either. On the clean-VM run the first
+# FIVE packages of all.sh's main list were silently lost:
+#   E: Could not get lock /var/lib/dpkg/lock-frontend.
+#      It is held by process 10042 (apt-get)
+#   [!] apt-transport-https FAILED to install
+#   [!] libssl-dev / mc / seclists / golang FAILED to install
+# Something else held the lock for a few seconds and apt-get gave up instantly,
+# so five packages just did not get installed - including golang, which every
+# go_install below depends on. Without a timeout ANY concurrent apt loses the
+# race: an unattended-upgrades run, a background apt-daily, or the second
+# terminal this repo's own NEXT STEPS tells the operator to use for jVision
+# while all.sh churns. With it, apt waits for the lock instead of failing.
+_apt_get_install() {
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+         -o Dpkg::Options::=--force-confdef \
+         -o Dpkg::Options::=--force-confold \
+         -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \
+         $APT_IPV4 "$@"
+}
+
+# RETRY ONCE BEFORE GIVING UP. apt's own Acquire::Retries covers connection
+# failures and timeouts, but NOT a definitive HTTP 4xx - apt treats that as a
+# hard error and stops. Three separate runs, three different mirrors:
+#   run 3: E: Unable to connect to mirrors.netix.net   -> lost libreoffice-writer
+#   run 6: E: Failed to fetch .../sharphound_2.14.0.deb 403 Forbidden
+#          [IP: 104.17.253.239]                        -> lost bloodhound
+#   run 7: E: Failed to fetch .../sharphound_2.14.0.deb 403 Forbidden
+#          [IP: 88.218.137.65] (mirror1.sox.rs)        -> RECOVERED by this retry
+# In run 7 the retry worked exactly as intended: the second attempt resolved to
+# kali.download and fetched only the 2,514 kB that was missing. That is three of
+# seven end-to-end runs losing a package to a transient mirror or CDN fault.
+# Note the shape of the failure in every case - a connection timeout FIRST, then
+# a 403 on apt's own internal retry. These mirrors 403 under load, so a second
+# attempt seconds later usually lands somewhere else and succeeds.
+_apt_retry_once() {
+    local what=$1; shift
+    print_warning "$what failed - retrying once in 5s (transient mirror/CDN faults are common)"
+    sleep 5
+    _apt_get_install "$@"
+}
+
 # NEWEST-WINS FOR DISTRO PACKAGES.
 # This used to `dpkg -s` and skip, which meant every tool the Kali ISO already
 # shipped stayed at the ISO's version forever - impacket, netexec, certipy,
@@ -127,84 +191,34 @@ fi
 # Two tiers, on purpose - distro packages track current, PINNED artifacts
 # (fetch_pinned) stay at a reviewed version. Those are opposite goals and
 # fetch_pinned must not be "helpfully" made to chase latest.
+#
+# BOTH branches retry. The upgrade branch used to not, and run 7 showed why that
+# was wrong: `responder` drew mirror.ourhost.az, got the same timeout-then-403 as
+# sharphound did eleven minutes later, and - because it was already installed -
+# fell down the no-retry path and stayed at 3.2.2.0-0kali1 while sharphound, four
+# lines away in this same function, was rescued. Same fault, same minute, same
+# file; one was handled and one was not. An upgrade that silently does not happen
+# is quieter than a failed install but it still means the box is not what the
+# manifest says it is.
 apt_install() {
     local pkg
     for pkg in "$@"; do
         if dpkg -s "$pkg" &>/dev/null; then
-            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                   -o Dpkg::Options::=--force-confdef \
-                   -o Dpkg::Options::=--force-confold \
-                   -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \
-                   $APT_IPV4 --only-upgrade "$pkg"; then
+            if _apt_get_install --only-upgrade "$pkg"; then
                 print_success "$pkg present (upgraded if newer was available)"
+            elif _apt_retry_once "$pkg upgrade" --only-upgrade "$pkg"; then
+                print_success "$pkg present (upgraded on retry)"
             else
-                print_warning "$pkg present but upgrade failed (keeping what is there)"
+                print_warning "$pkg present but upgrade failed after a retry (keeping what is there)"
+                APT_STALE+=("$pkg")
             fi
-        elif sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                 -o Dpkg::Options::=--force-confdef \
-                 -o Dpkg::Options::=--force-confold \
-                 -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 $APT_IPV4 "$pkg"; then
-            # 'sudo env DEBIAN_FRONTEND=...' is REQUIRED: sudo strips the exported
-            # DEBIAN_FRONTEND, so without this, debconf prompts (docker.io's
-            # "Remove all Docker data?", neo4j's preconfigure) appear and fail the
-            # non-interactive install.
-            # The two Dpkg::Options close the OTHER interactive path that
-            # DEBIAN_FRONTEND does not cover: when a package ships a changed
-            # config file, dpkg stops and asks keep/replace. --force-confdef plus
-            # --force-confold answers "keep what is there" without asking, which
-            # is the right answer on a box we are building, and means an install
-            # can never block waiting for someone who is not watching.
-            #
-            # Acquire::Retries=3 is here for the same reason: measured failure, not
-            # theory. Run 3 lost libreoffice-writer outright to one unreachable
-            # mirror -
-            #   E: Failed to fetch http://mirrors.netix.net/kali/pool/.../liborcus...
-            #      Unable to connect to mirrors.netix.net:http: [IP: 87.121.121.4 80]
-            # - and the verification then correctly reported "soffice NOT
-            # installed", so the report-to-PDF path was silently gone. apt does not
-            # retry a failed fetch by default; the same install succeeded by hand
-            # minutes later. Kali's mirror pool is community-run and individual
-            # mirrors flake regularly.
-            #
-            # DPkg::Lock::Timeout=600 is NOT cosmetic - it is here because of a
-            # measured failure. On the clean-VM run the first FIVE packages of
-            # all.sh's main list were silently lost:
-            #   E: Could not get lock /var/lib/dpkg/lock-frontend.
-            #      It is held by process 10042 (apt-get)
-            #   [!] apt-transport-https FAILED to install
-            #   [!] libssl-dev / mc / seclists / golang FAILED to install
-            # Something else held the lock for a few seconds and apt-get gave up
-            # instantly, so five packages just did not get installed - including
-            # golang, which every go_install below depends on. Without a timeout
-            # ANY concurrent apt loses the race: an unattended-upgrades run, a
-            # background apt-daily, or the second terminal this repo's own NEXT
-            # STEPS tells the operator to use for jVision while all.sh churns.
-            # With it, apt waits for the lock instead of failing.
+        elif _apt_get_install "$pkg"; then
             print_success "$pkg installed"
+        elif _apt_retry_once "$pkg" "$pkg"; then
+            print_success "$pkg installed (on retry)"
         else
-            # RETRY ONCE BEFORE GIVING UP. apt's own Acquire::Retries (set above)
-            # covers connection failures and timeouts, but NOT a definitive HTTP
-            # 4xx - apt treats that as a hard error and stops. Both observed:
-            #   run 3: E: Unable to connect to mirrors.netix.net  -> lost libreoffice-writer
-            #   run 6: E: Failed to fetch .../sharphound_2.14.0.deb 403 Forbidden
-            #          [IP: 104.17.253.239]                        -> lost bloodhound
-            # That is two of six end-to-end runs losing a package to a transient
-            # mirror or CDN fault, and in run 6 it cost BloodHound - the centre of
-            # the whole AD workflow. kali.download is Cloudflare-fronted, so a
-            # second attempt often lands on a different edge; both failures
-            # succeeded by hand minutes later.
-            print_warning "$pkg failed - retrying once in 5s (transient mirror/CDN faults are common)"
-            sleep 5
-            if sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                   -o Dpkg::Options::=--force-confdef \
-                   -o Dpkg::Options::=--force-confold \
-                   -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \
-                   $APT_IPV4 "$pkg"; then
-                print_success "$pkg installed (on retry)"
-            else
-                print_warning "$pkg FAILED to install (after a retry)"
-                APT_FAILED+=("$pkg")
-            fi
+            print_warning "$pkg FAILED to install (after a retry)"
+            APT_FAILED+=("$pkg")
         fi
     done
 }

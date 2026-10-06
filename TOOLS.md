@@ -487,6 +487,57 @@ files that carry the engagement-evidence layer, where noise beats silence.
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--mobile`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-06 (fourteenth pass): run 7 is FULLY CLEAN — 115/0/0 — and it caught
+  the apt retry working in the wild and the same retry MISSING seven lines away.**
+  `start.sh` clean, not one network fault in it. `all.sh`: **115 passed, 0 warnings,
+  0 failed**, `[+] All critical tools verified!`, 31 pins verified, Burp jar at
+  684,704,951 bytes, Burp 2026.3.3. Second fully-green end-to-end run.
+  🟢 **The apt retry from the twelfth pass fired for real and saved BloodHound.** Same
+  package, same fault class, different mirror:
+  `Err:7 http://mirror1.sox.rs/kali ... sharphound 2.14.0-0kali1 / Connection timed out
+  [IP: 88.218.137.65 80] / 403 Forbidden`. The retry's second attempt resolved to
+  `kali.download` and fetched only the missing **2,514 kB** — `Fetched 664 kB in 1s` — and
+  bloodhound, neo4j, azurehound and sharphound all installed. That mechanism is now
+  **measured in production**, not just unit-tested.
+  🔴 **But the retry only guarded ONE of the two branches, and the same run proved it.**
+  Eleven minutes before sharphound, `responder` drew `mirror.ourhost.az` and got the
+  byte-identical fault — `Connection timed out [IP: 94.20.141.19 80]` then
+  `403 Forbidden` — but because responder was **already installed** it went down
+  `apt_install`'s `--only-upgrade` branch, which had no retry, and the box kept
+  `3.2.2.0-0kali1`. Same fault, same function, same minute: one package rescued, one not.
+  Both branches retry now, and a package that stays behind is reported in a new
+  **`APT_STALE`** list rather than a single warning that scrolls past — an upgrade that
+  silently does not happen is quieter than a failed install but it still means two
+  operators' boxes differ. Unit-tested all four paths with a stubbed `sudo`/`dpkg`/`apt-get`
+  replaying the real error strings: transient-upgrade recovers, permanent-upgrade lands in
+  `APT_STALE`, transient-install recovers, permanent-install lands in `APT_FAILED`.
+  🔴 **`start.sh` had no retry on EITHER branch** — which is worse, because its list is
+  `python3 python3-pip python3-venv nmap git curl wget docker.io docker-compose
+  python3-pwntools build-essential cmake pkg-config ninja-build`. A 403 on `cmake` there is
+  how the unicorn wheel build died on run 1; a 403 on `docker.io` is a box where jVision
+  cannot start. `start.sh` was clean this run, but it was playing the same lottery with
+  worse stakes and no ticket. It now has the same retry on both branches plus a
+  `BASIC_STALE` list, and the desktop + xRDP install is retried too — "non-critical"
+  undersold it, since no xRDP means no remote GUI and that is where Burp gets used.
+  Also routed the bare `mono-complete mono-devel` install through `apt_install`: its exit
+  status was never checked, so a mirror fault there printed nothing at all, and the
+  `SharpEfsPotato verified (48 files)` line only counts files in the clone — a box with no
+  mono and an unbuilt `.exe` still reported success.
+  ⚠️ **Three of seven runs have now lost a package to a transient mirror fault** (run 3
+  `libreoffice-writer`, run 6 `bloodhound`, run 7 `responder`), from three different
+  mirrors. Note the shape, identical in every case: a **connection timeout first, then a
+  403** on apt's own internal retry. These community mirrors 403 under load, which is
+  exactly why a second attempt seconds later lands elsewhere and works.
+  ℹ️ **The `1 preflight check(s) FAILED` line is expected and is not a defect.** It is
+  `command logging installed but NOTHING logged yet - hook not loaded`. The readable log
+  only grows once an interactive shell has sourced the rc block, and this run drove the VM
+  non-interactively, so no interactive shell ever existed. On the documented human path —
+  open a fresh terminal, type `bash all.sh` — zsh's preexec logs that very command and the
+  check passes. `all.sh` genuinely cannot load a hook into the shell that invoked it, so
+  this is the one preflight item that stays a report rather than a repair.
+  ⚠️ **`smol-all.sh` was left alone deliberately.** Its batch-then-per-package fallback
+  already gives every package a second independent network attempt, which is the same
+  mechanism by a different route.
 - ✅ **Closed 2026-10-06 (thirteenth pass): a teammate's run (113/0/2) hit three network
   faults and exposed three real script defects.** His three network errors — Burp dying at
   412 MB of 653 MB (`curl: (56) Recv failure: Connection reset by peer`, throughput down to
@@ -547,7 +598,8 @@ files that carry the engagement-evidence layer, where noise beats silence.
   retries connection failures and timeouts but treats a definitive HTTP 4xx as a hard error
   and stops. That is now **two of six end-to-end runs losing a package to a transient mirror
   or CDN fault** (run 3 `libreoffice-writer`, connection refused; run 6 `bloodhound`, 403) —
-  a 33% rate on a build that has to work on engagement morning. `apt_install` now **retries
+  a 33% rate on a build that has to work on engagement morning. *(Run 7 made it three of
+  seven, and showed this retry working — see the fourteenth pass above.)* `apt_install` now **retries
   once after 5 s** before recording a failure; `kali.download` is Cloudflare-fronted so a
   second attempt often lands on a different edge, and both observed failures succeeded by
   hand minutes later. Unit-tested both branches: a transient failure recovers and is **not**

@@ -1014,7 +1014,13 @@ fi
 print_status "Installing SharpEfsPotato (requires mono for building)..."
 if ! command -v mono &> /dev/null; then
     print_status "Installing mono for C# compilation..."
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 mono-complete mono-devel
+    # Routed through apt_install rather than a bare apt-get: that gets the retry
+    # and, more to the point, gets mono into APT_FAILED if it does not arrive.
+    # It used to be a bare call whose exit status was never checked, so a mirror
+    # fault here produced no message at all - and the SharpEfsPotato "verified"
+    # line below only counts files in the clone, so a box with no mono and an
+    # unbuilt .exe still reported success.
+    apt_install mono-complete mono-devel
 fi
 
 if [ ! -d "$USER_HOME/dropzone/SharpEfsPotato" ]; then
@@ -1746,6 +1752,19 @@ if [ ${#APT_FAILED[@]} -gt 0 ]; then
     echo ""
     print_warning "APT packages that FAILED to install: ${APT_FAILED[*]}"
     print_warning "  Retry manually: sudo apt install ${APT_FAILED[*]}"
+fi
+
+# Reported separately from APT_FAILED because it is a MILDER fault with the same
+# cause. The tool is there and the verification below will pass it; what did not
+# happen is the upgrade, so this box is pinned to whatever the ISO shipped while
+# another operator's box got the newer build. That divergence is invisible unless
+# it is named here - run 7 kept responder at 3.2.2.0-0kali1 and nothing in the
+# summary said so.
+if [ ${#APT_STALE[@]} -gt 0 ]; then
+    echo ""
+    print_warning "APT packages left at an OLDER version (upgrade fetch failed twice): ${APT_STALE[*]}"
+    print_warning "  The tool works; this box just is not current. Another operator may differ."
+    print_warning "  Retry manually: sudo apt install --only-upgrade ${APT_STALE[*]}"
 fi
 
 # Last chance to hand back anything created while running as root.

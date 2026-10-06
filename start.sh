@@ -188,20 +188,43 @@ fi
 # of these at the version they were frozen at, and apt_install's old `dpkg -s` ->
 # skip meant the build never moved them forward. Present-but-older now gets
 # upgraded; present-and-current is a fast no-op.
+#
+# EVERY apt call here RETRIES ONCE. Acquire::Retries (in APT_NI) covers a
+# connection failure or a timeout but NOT a definitive HTTP 4xx, which apt treats
+# as fatal. Kali's mirror pool is community-run and individual mirrors 403 under
+# load: three of seven end-to-end runs lost a package that way, from three
+# different mirrors, and in every case a retry seconds later resolved to a
+# different mirror and worked. all.sh's apt_install already did this; start.sh
+# did not, and start.sh is the worse place to lack it - this list is python3,
+# docker.io, build-essential and cmake. A 403 on cmake here is how the unicorn
+# wheel build died on run 1, and a 403 on docker.io is a box where jVision cannot
+# start and the operator is told to "run all.sh" to find out why.
 BASIC_PKGS=(python3 python3-pip python3-venv nmap git curl wget
             docker.io docker-compose python3-pwntools
             build-essential cmake pkg-config ninja-build)
 BASIC_FAILED=()
+BASIC_STALE=()
+apt_retry_once() {   # $1 = label for the message, rest = apt-get install args
+    local what=$1; shift
+    print_warning "$what failed - retrying once in 5s (community mirrors flake)"
+    sleep 5
+    "${APT_NI[@]}" "$@"
+}
 print_status "Installing basic packages (${#BASIC_PKGS[@]} packages, one at a time)..."
 for pkg in "${BASIC_PKGS[@]}"; do
     if dpkg -s "$pkg" &>/dev/null; then
         if "${APT_NI[@]}" --only-upgrade "$pkg"; then
             print_success "$pkg present (upgraded if newer was available)"
+        elif apt_retry_once "$pkg upgrade" --only-upgrade "$pkg"; then
+            print_success "$pkg present (upgraded on retry)"
         else
             print_warning "$pkg present but could not be upgraded (keeping what is there)"
+            BASIC_STALE+=("$pkg")
         fi
     elif "${APT_NI[@]}" "$pkg"; then
         print_success "$pkg installed"
+    elif apt_retry_once "$pkg" "$pkg"; then
+        print_success "$pkg installed (on retry)"
     else
         print_warning "$pkg FAILED to install"
         BASIC_FAILED+=("$pkg")
@@ -212,6 +235,10 @@ if [ ${#BASIC_FAILED[@]} -eq 0 ]; then
 else
     print_warning "Could not install: ${BASIC_FAILED[*]}"
     print_warning "  Continuing - the verification below decides if this box is usable."
+fi
+if [ ${#BASIC_STALE[@]} -gt 0 ]; then
+    print_warning "Left at an older version (upgrade fetch failed twice): ${BASIC_STALE[*]}"
+    print_warning "  Retry later: sudo apt install --only-upgrade ${BASIC_STALE[*]}"
 fi
 
 print_status "Verifying basic tool installations..."
@@ -335,12 +362,18 @@ fi
 print_status "Checking for desktop environment..."
 if ! dpkg -l | grep -q kali-desktop-xfce; then
     print_status "Installing XFCE desktop and xRDP (this may take a while)..."
-    if "${APT_NI[@]}" kali-desktop-xfce xorg xrdp; then
+    # Retried for the same reason as the loop above, and it matters more than
+    # "non-critical" suggests: no desktop means no xRDP, and xRDP is how the
+    # operator reaches Burp's GUI on a VDI box. apt only re-fetches what is
+    # missing, so the second attempt is cheap even on a ~1 GB install.
+    if "${APT_NI[@]}" kali-desktop-xfce xorg xrdp \
+       || apt_retry_once "desktop + xRDP" kali-desktop-xfce xorg xrdp; then
         sudo systemctl enable xrdp --now
         sudo systemctl start xrdp
         print_success "Desktop environment installed and xRDP configured"
     else
         print_warning "Desktop environment installation failed (non-critical)"
+        print_warning "  No xRDP means no remote GUI - that is where Burp gets used."
     fi
 else
     print_success "Desktop environment already installed"
