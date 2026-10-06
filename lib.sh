@@ -502,7 +502,11 @@ fetch_pinned() {
         verify_on_disk "$name" "$dest" "$pre"
         return $?
     fi
-    if ! $pre curl -fSL --retry 3 --connect-timeout 15 "$url" -o "$dest"; then
+    # --retry-all-errors for the same reason as install_burp_latest: plain --retry
+    # covers only what curl deems transient, so a mid-transfer connection reset
+    # (curl 56) is not retried at all. These are small files, so the exposure is
+    # smaller, but the fix is one flag and the manifest is 32 downloads wide.
+    if ! $pre curl -fSL --retry 3 --retry-all-errors --connect-timeout 15 "$url" -o "$dest"; then
         print_warning "download failed: $(basename "$dest")"
         return 1
     fi
@@ -669,9 +673,36 @@ install_burp_latest() {
     sudo mkdir -p "$BURP_DIR" || return 1
     print_status "Downloading Burp Suite Community $want (~650 MB, the single"
     print_status "  largest download in the build after the desktop)..."
-    if ! sudo curl -fSL --retry 3 --connect-timeout 15 "$BURP_URL" -o "$jar.part"; then
-        print_warning "Burp download failed"
-        sudo rm -f "$jar.part"
+    # 653 MB over somebody else's network, so this curl is built to survive a bad
+    # few minutes. A teammate's run died at 412 MB of 653 MB with
+    #     curl: (56) Recv failure: Connection reset by peer
+    # after throughput had sagged to 186 KB/s, and the old code then deleted the
+    # .part file - binning 412 MB and leaving the box with no Burp.
+    #
+    #  -C -                 RESUME from whatever is already in .part. Verified
+    #                       both ways: with no file present curl starts at 0 and
+    #                       completes, and on a deliberately truncated file it
+    #                       resumes and the sha256 of the result still MATCHES,
+    #                       so a resumed jar is byte-correct and not Frankenstein.
+    #  --retry-all-errors   `--retry 3` ALONE DID NOT HELP, and that is the whole
+    #                       point: curl only retries what it considers transient
+    #                       (timeouts, 5xx, 429). A mid-transfer connection reset
+    #                       - error 56, exactly what happened - is not in that
+    #                       set, so the three retries never fired once.
+    #  --speed-limit/-time  abort if throughput stays under 100 KB/s for 60 s, so
+    #                       a dying connection fails fast and gets retried from
+    #                       where it stopped, instead of crawling. At the 186 KB/s
+    #                       that run was seeing, 653 MB would take over an hour.
+    if ! sudo curl -fSL -C - --retry 5 --retry-all-errors --retry-delay 5 \
+                   --connect-timeout 15 --speed-limit 102400 --speed-time 60 \
+                   "$BURP_URL" -o "$jar.part"; then
+        print_warning "Burp download failed after $(sudo stat -Lc %s "$jar.part" 2>/dev/null || echo 0) of ~685000000 bytes"
+        print_warning "  The partial file is KEPT - re-running all.sh RESUMES it, it does not restart."
+        # .part is KEPT on a download failure, deliberately - that is what
+        # makes `-C -` above worth having. Re-running all.sh resumes from here
+        # rather than starting the 653 MB again. It is only deleted below, when
+        # the bytes have been proven wrong.
+        sudo chmod 0644 "$jar.part" 2>/dev/null
         return 1
     fi
     # A captive portal answers 200 with an HTML page. A jar starts "PK", and a

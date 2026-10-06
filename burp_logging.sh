@@ -94,10 +94,25 @@ fi
 # --- 1. Jython jar ---------------------------------------------------------
 if [ ! -f "$JYTHON_JAR" ]; then
     print_status "Downloading Jython ${JYTHON_VER} standalone jar (~40MB)..."
+    # THE ONLY BARE curl IN THE REPO, until now. Every other download has at
+    # least --retry 2; this one had nothing - no retry, no connect timeout - and
+    # a single DNS blip killed it on a teammate's run:
+    #     curl: (6) Could not resolve host: repo1.maven.org
+    # Without the jython jar the Python extension cannot load at all, so the
+    # whole engagement HTTP log was silently absent from that box. In the same
+    # run linpeas hit the identical failure (Could not resolve host: github.com)
+    # and SURVIVED, because fetch_pinned has --retry 3 - which is the clearest
+    # possible argument for putting it here too.
+    # --retry-all-errors is included because plain --retry does not cover every
+    # resolve/reset case (see the long note in lib.sh's install_burp_latest).
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL -o "$JYTHON_JAR.tmp" "$JYTHON_URL" && mv "$JYTHON_JAR.tmp" "$JYTHON_JAR"
+        curl -fsSL -C - --retry 5 --retry-all-errors --retry-delay 5 \
+             --connect-timeout 15 -o "$JYTHON_JAR.tmp" "$JYTHON_URL" \
+             && mv "$JYTHON_JAR.tmp" "$JYTHON_JAR"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$JYTHON_JAR.tmp" "$JYTHON_URL" && mv "$JYTHON_JAR.tmp" "$JYTHON_JAR"
+        wget -q --tries=5 --timeout=15 --waitretry=5 -c \
+             -O "$JYTHON_JAR.tmp" "$JYTHON_URL" \
+             && mv "$JYTHON_JAR.tmp" "$JYTHON_JAR"
     else
         print_error "Neither curl nor wget available. Manual download URL:"
         print_error "  $JYTHON_URL"

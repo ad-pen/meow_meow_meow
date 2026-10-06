@@ -423,6 +423,32 @@ else
     print_warning "  so it is in place once Burp is available."
 fi
 
+# PURGE KALI'S BURP ONLY ONCE OURS IS ON DISK.
+# Kali's ISO ships its own `burpsuite` package (2026.3.2-0kali1) with its own menu
+# entry, and two Burps is an EVIDENCE problem: the operator picks "Burp Suite
+# Community" from the application menu, gets Kali's copy, and nothing is written
+# to ~/.burp_history_readable.
+#
+# But this used to run in start.sh, early - and that made a flaky download fatal.
+# On a teammate's run the 653 MB download died at 412 MB with
+#     curl: (56) Recv failure: Connection reset by peer
+# and because Kali's copy had already been purged minutes earlier in start.sh,
+# the finished box had NO Burp at all. Removing the fallback before the
+# replacement exists is only safe if the replacement cannot fail, and a 653 MB
+# download over someone else's network can always fail.
+# So: gated on BURP_OK, and if ours did not land, Kali's older copy stays.
+if [ "$BURP_OK" -eq 1 ] && dpkg -s burpsuite &>/dev/null; then
+    print_status "Removing Kali's packaged Burp (ours is installed, so it is now safe)..."
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get purge -y \
+        -o DPkg::Lock::Timeout=600 burpsuite \
+        && print_success "Kali's burpsuite package removed" \
+        || print_warning "Could not purge Kali's burpsuite (non-critical)"
+elif [ "$BURP_OK" -eq 0 ] && dpkg -s burpsuite &>/dev/null; then
+    print_warning "KEEPING Kali's burpsuite package: ours failed to install, so it is"
+    print_warning "  the only Burp on this box. It has NO logging extension - re-run"
+    print_warning "  bash all.sh  once the network is healthy to get ours."
+fi
+
 print_status "Configuring Burp Suite HTTP logging..."
 if bash "$SCRIPT_DIR/burp_logging.sh"; then
     print_success "Burp logging configured (readable log: $USER_HOME/.burp_history_readable)"
@@ -611,7 +637,7 @@ fi
 fin_msg 'Wordlists'
 
 print_status "Installing Sublime Text..."
-if wget -qO - https://download.sublimetext.com/sublimehq-pub.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/sublimehq-archive.gpg > /dev/null && \
+if wget -q --tries=3 --timeout=15 -O - https://download.sublimetext.com/sublimehq-pub.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/sublimehq-archive.gpg > /dev/null && \
    echo "deb https://download.sublimetext.com/ apt/stable/" | sudo tee /etc/apt/sources.list.d/sublime-text.list > /dev/null && \
    sudo apt-get update -qq -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 && \
    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -qq -y -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 \

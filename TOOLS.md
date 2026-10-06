@@ -487,6 +487,48 @@ files that carry the engagement-evidence layer, where noise beats silence.
   `statistically-likely-usernames`, NaturalT314 ToolBox.
 - ✅ **Closed:** the mobile gap (now `--mobile`), the `ldap-utils` gap that `smol-all.sh`
   flagged, and the `openjdk-11-jdk` question (verified present in Kali).
+- ✅ **Closed 2026-10-06 (thirteenth pass): a teammate's run (113/0/2) hit three network
+  faults and exposed three real script defects.** His three network errors — Burp dying at
+  412 MB of 653 MB (`curl: (56) Recv failure: Connection reset by peer`, throughput down to
+  186 KB/s), Jython `curl: (6) Could not resolve host: repo1.maven.org`, and linpeas hitting
+  the same DNS failure but **retrying and succeeding** — are not script bugs, as he says. The
+  three defects they revealed are, and all three are confirmed in the code:
+  1. 🔴 **The Burp purge made a flaky download FATAL, and that was my regression.** `start.sh`
+     purged Kali's `burpsuite` early (line ~162); `install_burp_latest` runs at `all.sh:418`,
+     far later. Purge-then-install leaves a window in which one network blip ends with the box
+     having **no Burp at all** — which is exactly what happened to him. Removing the fallback
+     before the replacement exists is only safe if the replacement cannot fail, and a 653 MB
+     download over someone else's network can always fail. The purge now lives in `all.sh`
+     **gated on `BURP_OK`**, immediately after the install succeeds; if ours did not land,
+     Kali's older copy stays and the operator is told it has no logging extension. Tested both
+     branches with a stubbed `sudo`/`dpkg`: `BURP_OK=1` purges, `BURP_OK=0` does not.
+  2. 🔴 **No resume on a 653 MB download.** The old code deleted `$jar.part` on failure,
+     binning 412 MB. Now `-C -` plus `--speed-limit 102400 --speed-time 60` (abort a stalled
+     transfer instead of crawling — at the 186 KB/s he saw, 653 MB would take over an hour),
+     and **`.part` is kept on a download failure** so a re-run resumes, while still being
+     deleted on a *validation* failure where the bytes are proven wrong.
+     **Resume verified empirically**: with no file present curl starts at 0 and completes; on a
+     file deliberately truncated to 1,000,000 bytes it resumes to the full 4,724,737 and the
+     **sha256 still matches** — so a resumed jar is byte-correct, not Frankenstein.
+  3. 🔴 **Jython had no retry at all** — `burp_logging.sh:98` was the **only bare `curl` in the
+     repo** (no `--retry`, no `--connect-timeout`) while every other download had at least
+     `--retry 2`. One DNS blip killed it, and without the jython jar the Python extension
+     cannot load, so the whole engagement HTTP log was absent from his box. That linpeas
+     survived the *identical* DNS failure because `fetch_pinned` has `--retry 3` is the
+     clearest possible argument for the fix. Now `--retry 5 --retry-all-errors
+     --connect-timeout 15` on the curl path and `--tries=5 --timeout=15 -c` on the wget path.
+  ⚠️ **One detail of his report is wrong:** he says the extension was *"staged but not
+  registered"*. It was not staged either — the jython download is at `burp_logging.sh:96` and
+  `exit 1` at 107, **before** `Extension -> $EXT_DST` at 117, so the script exits first.
+  Substance (no HTTP logging on that box) is right.
+  ⚠️ **`--retry-all-errors` is NOT empirically proven here, and I tried.** It is correct per
+  curl's own documentation — plain `--retry` covers only what curl deems transient, which does
+  not include a mid-transfer reset (error 56) — and it matches his observation that the
+  existing `--retry 3` never fired. But three attempts at a fault-injection harness kept
+  producing curl errors 18 and 28 rather than 56, and plain `--retry` recovers from *those*,
+  so the test could not discriminate. **The resume half is proven; treat the flag as
+  documented-correct rather than measured.** Also added to `fetch_pinned` and `pins.sh` for
+  consistency, and the Sublime GPG `wget` gained `--tries=3 --timeout=15`.
 - ✅ **Closed 2026-10-05 (twelfth pass): run 6 measured the ScoutSuite saving, and lost
   BloodHound to a CDN 403.** 114 passed, 0 warnings, 1 failed. `start.sh` 3m01s,
   `all.sh` 30m22s.

@@ -150,22 +150,15 @@ Package: needrestart
 Pin: release *
 Pin-Priority: -1
 PIN
-# Kali's ISO ships its own `burpsuite` apt package (2026.3.2-0kali1 on the test
-# image) AND its own menu entry. all.sh installs PortSwigger's current jar to
-# /opt/burpsuite with the engagement logging extension wired in. Two Burps on one
-# box is not a tidiness problem, it is an EVIDENCE problem: the operator picks
-# "Burp Suite Community" out of the application menu, gets Kali's copy, and
-# nothing is written to ~/.burp_history_readable. Our /usr/local/bin/burpsuite
-# wins on PATH, but nobody launches a GUI tool from a terminal.
-print_status "Removing Kali's packaged Burp (we install PortSwigger's current jar)..."
-if dpkg -s burpsuite &>/dev/null; then
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get purge -y \
-        -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 burpsuite \
-        && print_success "Kali's burpsuite package removed" \
-        || print_warning "Could not purge Kali's burpsuite (non-critical)"
-else
-    print_success "Kali's burpsuite package not present (ok)"
-fi
+# NOTE: Kali's own `burpsuite` apt package is NOT purged here any more.
+# It used to be, and that turned a flaky download into a box with NO Burp at all:
+# start.sh purges early, PortSwigger's jar is installed by all.sh much later, and
+# on a teammate's run the 653 MB download died at 412 MB
+# (curl: (56) Recv failure: Connection reset by peer). Purge first + install
+# later = a window in which a network blip leaves the operator with neither copy.
+# The purge now happens in all.sh, immediately after install_burp_latest has
+# actually succeeded. See the block there.
+
 
 print_status "Updating package lists..."
 if sudo apt-get update -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3; then

@@ -78,7 +78,7 @@ case $MODE in
     OUT="$TMP/lines"; : > "$OUT"
     fail=0
     for n in $names; do
-        if curl -fsSL --retry 3 --connect-timeout 15 "${PIN_URL[$n]}" -o "$TMP/$n"; then
+        if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 "${PIN_URL[$n]}" -o "$TMP/$n"; then
             sha=$(sha256sum "$TMP/$n" | cut -d' ' -f1)
             printf 'PIN_SHA[%s]="%s"\n' "$n" "$sha" >> "$OUT"
             print_success "$n  ${sha:0:16}...  ($(stat -c %s "$TMP/$n") bytes)"
@@ -142,7 +142,7 @@ case $MODE in
             print_warning "$n has no recorded hash - skipped (version: ${PIN_VER[$n]})"
             skipped=$((skipped+1)); continue
         fi
-        if ! curl -fsSL --retry 3 --connect-timeout 15 "${PIN_URL[$n]}" -o "$TMP/$n"; then
+        if ! curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 "${PIN_URL[$n]}" -o "$TMP/$n"; then
             print_error "$n download failed"; drift=$((drift+1)); continue
         fi
         sha=$(sha256sum "$TMP/$n" | cut -d' ' -f1)
