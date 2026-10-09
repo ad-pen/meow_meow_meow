@@ -12,7 +12,10 @@
 # Redacted -> [REDACTED]:
 #   passwords, NTLM/LM hashes, Kerberos keys and tickets, and web secrets
 #   (Authorization/Cookie/X-API-Key headers, --cookie/--token/--api-token, HTTP
-#   basic auth, password=/token= in POST bodies and JSON) for known tools
+#   basic auth, and key=value secrets in query strings, POST bodies and JSON --
+#   matched WITH their decoration, so passwordRepeat/newPassword/password2 count,
+#   along with one-time codes, key material, DB connection strings, request
+#   signatures and security answers) for known tools
 #   (netexec/nxc, impacket, evil-winrm, smbclient, ldapsearch, hydra, sshpass,
 #   curl -u, certipy, Rubeus-style /ticket:, user:pass@host, ...).
 #
@@ -112,6 +115,45 @@ _cptc_redact() {
     tool=$(_cptc_tool "$cmd")
     # a flag value may be bare, '\x27quoted\x27' or "quoted" (\x27 = a single quote)
     local V="(\x27[^\x27]*\x27|\"[^\"]*\"|[^[:space:]]+)"
+    # ---- key=value vocabulary, shared by the generic rules below -------------
+    # KEEP IN STEP WITH burp_logger.py's _FULL_SPECS / _TOKEN_SPECS /
+    # _SESSION_SPECS / _EXACT_FULL_KEYS. Same policy, different input shape.
+    #
+    # 2026-10-09: these rules used to list BARE roots - `(password|passwd|pwd|
+    # pass|token|secret|api_key|apikey)=` - so a key with anything appended
+    # logged in clear: `passwordRepeat=`, `password_confirmation=`, `password2=`.
+    # A change-password or registration form posts one of those on every
+    # submission. (Prefixes were already safe here, because these rules have no
+    # left anchor and match the root mid-key: `newPassword=` matches at
+    # `Password=` and the `new` is simply left outside the match. burp_logger.py
+    # was anchored with \b and so failed on the PREFIX instead - the two halves
+    # of one policy leaked on different inputs.) $DEC adds the suffix; the
+    # families after $STRONG/$WEAK were missing from both redactors outright.
+    local DEC="[A-Za-z0-9_.-]*"
+    # value: bare up to & / quote / space, or a quoted string
+    local KV="=(\x27[^\x27]*\x27|\"[^\"]*\"|[^\&\x27\"[:space:]]+)"
+    local STRONG="password|passwd|passphrase|passcode|credentials?|secret"
+    # short roots take a CLOSED suffix set, not $DEC: the client sells theme-park
+    # PASSES, so passType=/passholder=/passenger= must survive as ticketing
+    # evidence. (A prefixed short root is still redacted - guestPass=, bypass= -
+    # which is the accepted cost of catching userpass= and db_pw=.)
+    local WEAK="pwd|pw|pass"
+    local WSFX="([0-9]+|[_-]?(confirm(ation)?|repeat|retype|verify|check|again|new|old|hashed|hash))?"
+    local CODES="otp|totp|hotp|mfa|2fa|two[_-]?factor|one[_-]?time[_-]?(code|password|pass)|(sms|auth|authorization|verification|verify|recovery|backup|security|activation)[_-]?code|pin[_-]?code"
+    # `key` alone is far too common to redact, so it is gated on a qualifier
+    local KEYMAT="(master|encryption|private|priv|signing|sign|secret|client|access|api|aes|rsa|dsa|ssh|host|consumer|app)[_-]?key"
+    # connection strings EMBED a username and password
+    local CONNSTR="connection[_-]?string|conn[_-]?str(ing)?|dsn|(database|db|mongo|redis|amqp|postgres|mysql)[_-]?(url|uri)"
+    local ANSWER="(security|secret)[_-]?(question[_-]?)?answer"
+    # no suffix on the hash roots: `hashtag=` is a marketing field and the client
+    # runs campaign hashtags. password_hash=/pwhash= are caught by $STRONG/$WEAK.
+    local HASHK="nt[_-]?hash|lm[_-]?hash|ntlm|hash(es|ed)?"
+    local TOKENK="token|bearer|jwt|authorization|oauth|signature|hmac"
+    local SESSK="session|sessid|phpsessid|jsessionid"
+    # EXACT roots only, delimiter-anchored: this season's client sells tickets,
+    # so ticketId=/ticket_type=/parkTicket= are the IDOR evidence the report
+    # needs. Only a bare ticket= is treated as Kerberos. Same for pin= vs mapPin=.
+    local EXACTK="ticket|krbcred|kirbi|ccache|tgt|tgs|pin"
     # always-on: unambiguous secret patterns, any tool
     prog="
       s/((--password|--passwd|-password|--pw|-hashes|--hashes|--pw-nt-hash|-nthash|-lmhash|-aesKey|--aesKey)([[:space:]]+|=))$V/\\1[REDACTED]/g
@@ -124,9 +166,21 @@ _cptc_redact() {
       s/(authorization:[[:space:]]*)[^\x27\"]*/\\1[REDACTED]/gI
       s/(cookie:[[:space:]]*)[^\x27\"]*/\\1[REDACTED]/gI
       s/((--cookie|--cookies)[[:space:]=]+)$V/\\1[REDACTED]/g
-      s/(password|passwd|passphrase|pwd|pass|token|secret|api_key|apikey)=[^&\x27\"[:space:]]+/\\1=[REDACTED]/gI
+      s/(($STRONG)$DEC)$KV/\\1=[REDACTED]/gI
+      s/(($WEAK)$WSFX)$KV/\\1=[REDACTED]/gI
+      s/(($CODES)$DEC)$KV/\\1=[REDACTED]/gI
+      s/(($KEYMAT)$DEC)$KV/\\1=[REDACTED]/gI
+      s/(($CONNSTR)$DEC)$KV/\\1=[REDACTED]/gI
+      s/(($ANSWER)$DEC)$KV/\\1=[REDACTED]/gI
+      s/($HASHK)$KV/\\1=[REDACTED]/gI
+      s/(($TOKENK)$DEC)$KV/\\1=[REDACTED]/gI
+      s/(($SESSK)$DEC)$KV/\\1=[REDACTED]/gI
+      s/((^|[^A-Za-z0-9_.-])($EXACTK))$KV/\\1=[REDACTED]/gI
       s/(x-[a-z-]*(key|token):[[:space:]]*)[^\x27\"]*/\\1[REDACTED]/gI
-      s/(\"(password|passwd|passphrase|pwd|token|secret|api_key|apikey)\"[[:space:]]*:[[:space:]]*)\"[^\"]*\"/\\1\"[REDACTED]\"/gI
+      s/(\"[A-Za-z0-9_.-]{0,40}($STRONG|$CODES|$KEYMAT|$CONNSTR|$ANSWER|$TOKENK|$SESSK)$DEC\"[[:space:]]*:[[:space:]]*)\"[^\"]*\"/\\1\"[REDACTED]\"/gI
+      s/(\"[A-Za-z0-9_.-]{0,40}($WEAK)$WSFX\"[[:space:]]*:[[:space:]]*)\"[^\"]*\"/\\1\"[REDACTED]\"/gI
+      s/(\"($HASHK|$EXACTK)\"[[:space:]]*:[[:space:]]*)\"[^\"]*\"/\\1\"[REDACTED]\"/gI
+      s/[0-9a-fA-F]{32}:[0-9a-fA-F]{32}/[REDACTED-HASH]/g
       s/((--ticket|-ticket|--tgt|--tgs|--krbcred|--pfx-pass|-pfx-pass|--cert-pass)([[:space:]]+|=))$V/\\1[REDACTED]/g
       s#(/(ticket|krbcred):)[^[:space:]]+#\\1[REDACTED]#g
       s/(doI|YII)[A-Za-z0-9+\/=_-]{60,}/[REDACTED-TICKET]/g

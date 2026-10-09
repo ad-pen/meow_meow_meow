@@ -22,15 +22,27 @@
 # Bodies are capped at BODY_MAX bytes and truncated with a marker. Binary bodies
 # (null bytes or >30% non-printable) are summarised as <binary N bytes>.
 #
-# Redaction (applied to URL query string and body content):
+# Redaction (applied to URL query string and body content).
+# A key is matched with its DECORATION, so `newPassword`, `password_confirmation`
+# and `passwordRepeat` are caught as well as `password` -- see the long note at
+# the redaction-begin marker for why they were not, until 2026-10-09.
 #   FULL redact ([REDACTED]):
-#     password, passwd, passphrase, pwd, secret, JSON "password":"..." etc.
-#     basic-auth password in URL (user:PASS@host)
+#     password/passwd/passphrase/passcode/credential/secret and any decorated
+#     form; pw/pwd/pass with a credential-ish suffix; one-time codes (otp, totp,
+#     mfa, 2fa, recovery_code, sms_code, pincode); key material gated on a
+#     qualifier (api-key, x-api-key, ssh_key, private_key, aes_key, master_key);
+#     DB/broker connection strings (connection_string, dsn, database_url) --
+#     these embed a username and password; security answers; NTLM/LM hashes and
+#     a bare 32hex:32hex pair; Kerberos material on an EXACT root (ticket, tgt,
+#     krbcred, ccache) and a bare pin; basic-auth password in a URL
+#     (user:PASS@host) and an inline `Basic <b64>`
 #   Prefix-keep first 3 chars (auth-granting but useful to identify type):
-#     token, access_token, refresh_token, api_key, apikey, bearer,
-#     bare JWTs anywhere in body (eyJ...)
+#     token and any decorated form (access_token, refresh-token, auth_token,
+#     id_token), bearer/jwt/authorization/oauth, request signatures (signature,
+#     hmac), bare JWTs anywhere in a body (eyJ...), inline `Bearer <tok>`
 #   Prefix-keep first 2 chars (identifying, needed for client correlation):
-#     session, sessionid, PHPSESSID, JSESSIONID
+#     session and any decorated form (session_id, sessionId, ASP.NET_SessionId),
+#     PHPSESSID, JSESSIONID
 #   NO redaction:
 #     usernames -- kept as-is, deliberately. The log exists so the client can
 #     answer "which account touched this at time T"; a masked username defeats
@@ -66,39 +78,159 @@ BODY_METHODS_IF_NONEMPTY = set(["DELETE"])
 # Redaction
 # --------------------------------------------------------------------------
 
-# ⚠️ KEEP IN STEP WITH command_logging.sh's always-on 'password|passwd|...' rule.
-# These two redactors are the two halves of one evidence layer, and they had
-# already diverged: this list was missing a bare `pass`, so a login form posting
-# `user=admin&pass=hunter2` was logged in clear while the shell side redacted the
-# same key. `pass` is one of the commonest field names in a web form, and web is
-# the deepest sub-team. Added 2026-10-05, along with pw/passcode/credential.
-# `redaction_test.sh` now exercises BOTH redactors against one shared battery of
-# cases, so the next divergence fails a test instead of reaching the client.
-# Longest alternatives first (the `=` anchor makes order harmless, but it reads
-# clearer and is robust if the anchor is ever relaxed).
-_FULL_KEYS    = (r"passphrase|passcode|passwd|password|credentials|credential"
-                 r"|secret|pwd|pass|pw")
-_TOKEN_KEYS   = r"token|access_token|refresh_token|api_key|apikey|bearer"
-_SESSION_KEYS = r"session|sessionid|phpsessid|jsessionid"
-_HASH_KEYS    = r"hash(?:es)?|nthash(?:es)?|lmhash|nthashes|aeskey|ntlm"
-_TICKET_KEYS  = r"ticket|krbcred|kirbi|ccache|tgt|tgs"
+# >>> redaction-begin (redaction_test.sh extracts the code between these two
+# markers and runs it under CPython -- keep everything in here pure Python,
+# with no `burp` imports) >>>
+#
+# KEEP IN STEP WITH command_logging.sh's always-on key=value rules. These two
+# redactors are the two halves of one evidence layer, enforcing one policy
+# against different input in different languages, so every change here needs the
+# matching change there. `redaction_test.sh` exercises BOTH against one shared
+# battery, so a divergence fails a test instead of reaching the client.
+#
+# 2026-10-09 -- THE KEY PATTERNS WERE ANCHORED TOO TIGHTLY AND LEAKED 81 OF 110
+# REALISTIC FIELD NAMES. The old shape was `\b(password|...)\s*=\s*(VAL)`, which
+# demands the key be EXACTLY one of the listed roots:
+#   * the leading \b blocks a word-character PREFIX -- and `_` is a word
+#     character, so `new_password=` and `newPassword=` BOTH went in clear;
+#   * the `=` required immediately after the root blocks any SUFFIX, so
+#     `passwordRepeat=`, `password_confirmation=` and `password2=` did too.
+# Every registration and change-password form posts at least one of those, which
+# is how a cleartext password reached the file we hand the client. (The shell
+# redactor has no left anchor, so prefixes were safe there and suffixes were
+# not -- the two halves failed differently on the same input.)
+#
+# Fixed by allowing decoration on BOTH sides of a root, and by adding the key
+# families that were missing outright: OTP/MFA codes, key material, DB
+# connection strings, request signatures, security answers, and the
+# Authorization/JWT family.
+
+# Decoration permitted AFTER a root: `password`+`Repeat`, `session`+`Id`.
+_DEC = r"[A-Za-z0-9_.\[\]-]*"
+
+# Decoration permitted BEFORE a root, for the JSON rules only: `new`+`password`,
+# `x-`+`api-key`, `ASP.NET_`+`Session`+`Id`. The form/query rules do NOT match a
+# prefix -- they start at the root and leave the prefix outside the match, so
+# `new_password=x` -> `new_` + `password=[REDACTED]` writes the field name back
+# intact anyway. That is not a style choice but a throughput one: a pattern
+# starting with `[A-Za-z0-9_...]*` gives the regex engine no literal to scan
+# for, so it attempts a greedy prefix match at all 8192 positions of a maximal
+# body. Measured on an 8KB urlencoded body, prefix-matching both sides cost 6x
+# (and 11x on a base64 blob) -- call it 70ms per request inside the write lock,
+# which an Intruder run would feel. The JSON rules can afford a prefix because
+# they are anchored on a literal `"`, which the engine scans for directly, and
+# there the prefix is NEEDED: `"newPassword"` puts the decoration between the
+# quote and the root. Bounded to 40 chars so a pathological key cannot make the
+# engine backtrack across a whole body.
+_JPFX = r"[A-Za-z0-9_.-]{0,40}"
+
+# A key must START at a real delimiter (& ? { , " \' or whitespace). Used only by
+# the EXACT-root rules, to keep them from firing on a longer key that merely
+# ENDS in one of their roots -- `parkTicket=`, `mapPin=`.
+_KS = r"(?<![A-Za-z0-9_.\[\]-])"
+
+# Suffixes allowed after a SHORT root (pw/pwd/pass). Deliberately a CLOSED set,
+# unlike the strong roots: the client sells theme-park PASSES, so `passType=`,
+# `passholder=` and `passenger=` have to survive -- they are ticketing and guest
+# evidence, not secrets.
+# ⚠️ KNOWN, ACCEPTED OVER-REDACTION: a short root still matches with ANY prefix,
+# so `guestPass=7781` and `season_pass=` are redacted. That is the cost of
+# catching `userpass=`, `db_pw=` and the next compound nobody thought of, and it
+# is the direction that cannot cost points -- the full request is still in Burp's
+# own session for the write-up. The shell redactor has always behaved this way.
+# To keep pass IDs instead, require a separator or a known qualifier before a
+# short root; do it in BOTH redactors or they diverge again.
+_WS = r"(?:[0-9]+|[_-]?(?:confirm(?:ation)?|repeat|retype|verify|check|again"
+_WS += r"|new|old|hashed|hash))?"
+
+# (root alternation, suffix) pairs, declared once and compiled into both a
+# form/query matcher (no prefix) and a JSON matcher (bounded prefix).
+_FULL_SPECS = [
+    # passwords and friends -- arbitrary suffix. There is no benign field
+    # containing the substring `password` whose value we want in the log.
+    (r"passphrase|passcode|passwd|password|credentials|credential|secret", _DEC),
+    (r"pwd|pw|pass", _WS),
+    # one-time codes. Single-use but auth-granting, and a 2FA-bypass finding is
+    # written up from the request, not from the code.
+    (r"otp|totp|hotp|mfa|2fa|two[_-]?factor"
+     r"|one[_-]?time[_-]?(?:code|password|pass)"
+     r"|(?:sms|auth|authorization|verification|verify|recovery|backup"
+     r"|security|activation)[_-]?code"
+     r"|pin[_-]?code", _DEC),
+    # key material. `key` alone is far too common to redact, so it is gated on a
+    # qualifier: api-key, x-api-key, ssh_key, private_key, aes_key, ...
+    (r"(?:master|encryption|private|priv|signing|sign|secret|client|access"
+     r"|api|aes|rsa|dsa|ssh|host|consumer|app)[_-]?key", _DEC),
+    # DB/broker connection strings -- these EMBED a username and password.
+    (r"connection[_-]?string|conn[_-]?str(?:ing)?|dsn"
+     r"|(?:database|db|mongo|redis|amqp|postgres|mysql)[_-]?(?:url|uri)", _DEC),
+    (r"(?:security|secret)[_-]?(?:question[_-]?)?answer", _DEC),
+    # hashes are credentials outright (pass-the-hash needs nothing else). NO
+    # suffix on this root: `hashtag=` is a marketing field and the client runs
+    # campaign hashtags. `password_hash=`/`pwhash=` are caught by the roots above.
+    (r"nt[_-]?hash|lm[_-]?hash|ntlm|hash(?:es|ed)?", ""),
+]
+
+# Prefix-keep 3: auth-granting, but the first characters identify the scheme and
+# let the client correlate. `token` carries decoration, so this one root covers
+# access_token, refresh-token, auth_token, id_token, tokenValue, ...
+_TOKEN_SPECS = [
+    (r"token", _DEC),
+    (r"bearer|jwt|authorization|oauth", _DEC),
+    (r"signature|hmac", _DEC),
+]
+
+# Prefix-keep 2: identifying, needed for client correlation. `session` with
+# decoration covers session_id, sessionId, ASP.NET_SessionId, PHPSESSID, ...
+_SESSION_SPECS = [
+    (r"session|sessid|phpsessid|jsessionid", _DEC),
+]
+
+# FULL redact, EXACT root, no decoration either side. `ticket` is here rather
+# than in _FULL_SPECS for a client-specific reason: this season's client sells
+# tickets, so `ticketId=`, `ticket_type=` and `parkTicket=` are exactly the IDOR
+# evidence the report needs. Only a bare `ticket=` is treated as Kerberos.
+_EXACT_FULL_KEYS = r"ticket|krbcred|kirbi|ccache|tgt|tgs|pin"
+
+
+def _keys(specs, pre=""):
+    return "|".join(pre + r"(?:" + root + r")" + sfx for root, sfx in specs)
+
 
 # key = value  in URL query, form body, JS-object-ish, config-file-ish text.
 # Value forms recognized: "double-quoted"  |  'single-quoted'  |  bareword-no-ws.
 # Whitespace tolerated around '=' so `password = "hunter2"` matches too.
 _VAL = r'(?:"[^"]*"|\'[^\']*\'|[^&\s#]+)'
-_URL_FULL    = re.compile(r"(?i)\b(" + _FULL_KEYS    + r")\s*=\s*(" + _VAL + r")")
-_URL_TOKEN   = re.compile(r"(?i)\b(" + _TOKEN_KEYS   + r")\s*=\s*(" + _VAL + r")")
-_URL_SESSION = re.compile(r"(?i)\b(" + _SESSION_KEYS + r")\s*=\s*(" + _VAL + r")")
-_URL_HASH    = re.compile(r"(?i)\b(" + _HASH_KEYS    + r")\s*=\s*(" + _VAL + r")")
-_URL_TICKET  = re.compile(r"(?i)\b(" + _TICKET_KEYS  + r")\s*=\s*(" + _VAL + r")")
 
-# JSON:  "key":"value"   (best-effort -- doesn't handle escaped quotes in value)
-_JSON_FULL    = re.compile(r'(?i)("(?:' + _FULL_KEYS    + r')"\s*:\s*)"([^"]*)"')
-_JSON_TOKEN   = re.compile(r'(?i)("(?:' + _TOKEN_KEYS   + r')"\s*:\s*)"([^"]*)"')
-_JSON_SESSION = re.compile(r'(?i)("(?:' + _SESSION_KEYS + r')"\s*:\s*)"([^"]*)"')
-_JSON_HASH    = re.compile(r'(?i)("(?:' + _HASH_KEYS    + r')"\s*:\s*)"([^"]*)"')
-_JSON_TICKET  = re.compile(r'(?i)("(?:' + _TICKET_KEYS  + r')"\s*:\s*)"([^"]*)"')
+
+def _kv(keys, anchor=""):
+    return re.compile(r"(?i)" + anchor + r"(" + keys + r")\s*=\s*(" + _VAL + r")")
+
+
+def _json(keys):
+    # JSON:  "key":"value"  (best-effort -- doesn't handle escaped quotes)
+    return re.compile(r'(?i)("(?:' + keys + r')"\s*:\s*)"([^"]*)"')
+
+
+_URL_FULL    = _kv(_keys(_FULL_SPECS))
+_URL_TOKEN   = _kv(_keys(_TOKEN_SPECS))
+_URL_SESSION = _kv(_keys(_SESSION_SPECS))
+_URL_EXACT   = _kv(_EXACT_FULL_KEYS, anchor=_KS)
+
+_JSON_FULL    = _json(_keys(_FULL_SPECS,    pre=_JPFX))
+_JSON_TOKEN   = _json(_keys(_TOKEN_SPECS,   pre=_JPFX))
+_JSON_SESSION = _json(_keys(_SESSION_SPECS, pre=_JPFX))
+_JSON_EXACT   = _json(_EXACT_FULL_KEYS)
+
+# An LM:NT pair with no key name in front of it -- `?h=aad3b4...:31d6cf...`.
+# 32 hex : 32 hex is specific enough that a false positive is hard to construct.
+_HASH_PAIR = re.compile(r"\b[0-9a-fA-F]{32}:[0-9a-fA-F]{32}\b")
+
+# `Authorization: Bearer <tok>` / `Basic <b64>` appearing INSIDE a logged body
+# (proxied requests, SOAP envelopes, a header pasted into a JSON field). Basic
+# is redacted whole -- it base64-decodes straight back to user:password.
+_INLINE_BEARER = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/=-]{8,})")
+_INLINE_BASIC  = re.compile(r"(?i)\b(basic\s+)([A-Za-z0-9+/]{8,}={0,2})")
 
 # Basic-auth user:pass@host embedded in a URL: keep the username, hide the pass
 _URL_BASIC = re.compile(r"://([^:/@\s]+):([^@\s]+)@")
@@ -122,37 +254,42 @@ def _unquote(v):
 
 
 def _redact_url(url):
-    url = _URL_FULL.sub(   lambda m: m.group(1) + "=[REDACTED]",                                    url)
-    url = _URL_TOKEN.sub(  lambda m: m.group(1) + "=" + _keep_prefix(3, _unquote(m.group(2))),      url)
-    url = _URL_SESSION.sub(lambda m: m.group(1) + "=" + _keep_prefix(2, _unquote(m.group(2))),      url)
-    url = _URL_HASH.sub(   lambda m: m.group(1) + "=[REDACTED]",                                    url)
-    url = _URL_TICKET.sub( lambda m: m.group(1) + "=[REDACTED]",                                    url)
+    url = _URL_FULL.sub(   lambda m: m.group(1) + "=[REDACTED]",                               url)
+    url = _URL_EXACT.sub(  lambda m: m.group(1) + "=[REDACTED]",                               url)
+    url = _URL_TOKEN.sub(  lambda m: m.group(1) + "=" + _keep_prefix(3, _unquote(m.group(2))), url)
+    url = _URL_SESSION.sub(lambda m: m.group(1) + "=" + _keep_prefix(2, _unquote(m.group(2))), url)
     # username kept, password dropped
-    url = _URL_BASIC.sub(  lambda m: "://" + m.group(1) + ":[REDACTED]@",                           url)
+    url = _URL_BASIC.sub(  lambda m: "://" + m.group(1) + ":[REDACTED]@",                      url)
+    url = _HASH_PAIR.sub("[REDACTED-HASH]", url)
     return url
 
 
 def _redact_body(body):
     # form / key=value forms (also fires inside urlencoded and some multipart)
-    body = _URL_FULL.sub(   lambda m: m.group(1) + "=[REDACTED]",                                     body)
-    body = _URL_TOKEN.sub(  lambda m: m.group(1) + "=" + _keep_prefix(3, _unquote(m.group(2))),       body)
-    body = _URL_SESSION.sub(lambda m: m.group(1) + "=" + _keep_prefix(2, _unquote(m.group(2))),       body)
-    body = _URL_HASH.sub(   lambda m: m.group(1) + "=[REDACTED]",                                      body)
-    body = _URL_TICKET.sub( lambda m: m.group(1) + "=[REDACTED]",                                      body)
+    body = _URL_FULL.sub(   lambda m: m.group(1) + "=[REDACTED]",                               body)
+    body = _URL_EXACT.sub(  lambda m: m.group(1) + "=[REDACTED]",                               body)
+    body = _URL_TOKEN.sub(  lambda m: m.group(1) + "=" + _keep_prefix(3, _unquote(m.group(2))), body)
+    body = _URL_SESSION.sub(lambda m: m.group(1) + "=" + _keep_prefix(2, _unquote(m.group(2))), body)
     # JSON forms
     body = _JSON_FULL.sub(   lambda m: m.group(1) + '"[REDACTED]"',                          body)
+    body = _JSON_EXACT.sub(  lambda m: m.group(1) + '"[REDACTED]"',                          body)
     body = _JSON_TOKEN.sub(  lambda m: m.group(1) + '"' + _keep_prefix(3, m.group(2)) + '"', body)
     body = _JSON_SESSION.sub(lambda m: m.group(1) + '"' + _keep_prefix(2, m.group(2)) + '"', body)
-    body = _JSON_HASH.sub(   lambda m: m.group(1) + '"[REDACTED]"',                          body)
-    body = _JSON_TICKET.sub( lambda m: m.group(1) + '"[REDACTED]"',                          body)
     # bare JWTs anywhere (unlabeled Bearer tokens embedded in payloads, etc.)
     body = _BARE_JWT.sub(lambda m: _keep_prefix(3, m.group(0)), body)
+    # raw Authorization header values pasted into a body
+    body = _INLINE_BEARER.sub(lambda m: m.group(1) + _keep_prefix(3, m.group(2)), body)
+    body = _INLINE_BASIC.sub( lambda m: m.group(1) + "[REDACTED]",                body)
+    body = _HASH_PAIR.sub("[REDACTED-HASH]", body)
     return body
 
 
 def _escape_control(s):
     # Newlines/CRs would break the one-line-per-request invariant grep relies on.
     return s.replace(u"\r", u"\\r").replace(u"\n", u"\\n").replace(u"\t", u"\\t")
+
+
+# <<< redaction-end <<<
 
 
 # --------------------------------------------------------------------------
