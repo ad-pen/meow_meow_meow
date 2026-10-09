@@ -193,6 +193,18 @@ namespace jVision.Server.Controllers
             await _context.SaveChangesAsync();
             return NoContent();
         }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteBox(int id)
+        {
+            var box = await _context.Boxes.Include(b => b.Services).FirstOrDefaultAsync(b => b.BoxId == id);
+            if (box == null) return NotFound();
+            if (box.Services != null) _context.RemoveRange(box.Services);
+            _context.Boxes.Remove(box);
+            await _context.SaveChangesAsync();
+            await _hubContext.Clients.All.BoxAdded();
+            return NoContent();
+        }
         private bool BoxExists(int id)
         {
             return _context.Boxes.Any(e => e.BoxId == id);

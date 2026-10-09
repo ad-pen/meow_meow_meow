@@ -101,6 +101,9 @@ else
                 <button class="btn btn-success" @onclick="ResetFilters">Reset Filters</button>
             </div>
             <div class="p-1">
+                <button class="btn btn-success" @onclick="OpenCreateDialog">+ Create Box</button>
+            </div>
+            <div class="p-1">
                 <a href="download/diagram" class="btn btn-info" role="button" target="_top">Download Diagram</a>
             </div>
             <div class="p-1">
@@ -345,6 +348,9 @@ else
                 <div class="p-1">
                     <button @onclick:stopPropagation="true" @onclick:preventDefault="true" class="btn btn-success p-2 align-middle" @onclick="(() => OpenDialog(box, users))">Edit</button>
                 </div>
+                <div class="p-1">
+                    <button @onclick:stopPropagation="true" @onclick:preventDefault="true" class="btn btn-danger p-2 align-middle" @onclick="(() => DeleteBox(box))">Remove</button>
+                </div>
                 @if (box.HasUploadedScans)
                 {
                     <div class="p-1">
@@ -368,6 +374,9 @@ else
                 @PresenceChip(box.BoxId)
                 <div class="p-1">
                     <button @onclick:stopPropagation="true" @onclick:preventDefault="true" class="btn btn-success p-2 align-middle" @onclick="(() => OpenDialog(box, users))">Edit</button>
+                </div>
+                <div class="p-1">
+                    <button @onclick:stopPropagation="true" @onclick:preventDefault="true" class="btn btn-danger p-2 align-middle" @onclick="(() => DeleteBox(box))">Remove</button>
                 </div>
                 @if (box.HasUploadedScans)
                 {
@@ -643,7 +652,38 @@ else
 
     private async Task OpenDialog(BoxDTO b, List<string> u)
     {
+        _modalTitle = "Edit Box";
         await _dialog.Open(b, u);
+    }
+
+    private async Task OpenCreateDialog()
+    {
+        _modalTitle = "Create Box";
+        var fresh = new BoxDTO
+        {
+            BoxId = 0,
+            Ip = "",
+            Hostname = "",
+            Subnet = "",
+            Os = "",
+            UserName = "",
+            Standing = "",
+            Comments = "",
+            Services = new List<ServiceDTO>()
+        };
+        await _dialog.Open(fresh, users);
+    }
+
+    private async Task DeleteBox(BoxDTO b)
+    {
+        var confirmed = await _JSRuntime.InvokeAsync<bool>("confirm", $"Remove box {b.Ip} ({b.Hostname})?");
+        if (!confirmed) return;
+        var resp = await Http.DeleteAsync($"{requestUri}/{b.BoxId}");
+        if (resp.IsSuccessStatusCode)
+        {
+            boxes = boxes.Where(x => x.BoxId != b.BoxId).ToList();
+            Search();
+        }
     }
 
     // "Uploaded" button popup state -- kept fully separate from the down-arrow
@@ -686,7 +726,14 @@ else
 
     private async Task HVS(BoxDTO bb)
     {
-        var response = await Http.PutAsJsonAsync(requestUri, bb);
+        if (bb.BoxId == 0)
+        {
+            await Http.PostAsJsonAsync(requestUri, new List<BoxDTO> { bb });
+        }
+        else
+        {
+            await Http.PutAsJsonAsync(requestUri, bb);
+        }
         await _dialog.Close();
     }
 

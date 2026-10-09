@@ -331,8 +331,8 @@ namespace jVision.Server.Controllers
                 {"default","verticalLabelPosition=bottom;html=1;verticalAlign=top;align=center;strokeColor=none;fillColor=#00BEF2;shape=mxgraph.azure.computer;pointerEvents=1;" },
                 {"sunet", "swimlane;html=1;fontStyle=1;startSize=60;strokeColor=#3F7DE0;fillColor=#3f7de0;collapsible=0;fontColor=#ffffff;fontSize=18;whiteSpace=wrap;html=1;" },
                 {"rekt","shape=rectangle;fillColor=#3F7DE0;strokeColor=#3F7DE0;fontSize=14;fontColor=#FFFFFF;aspect=fixed;align=center;whiteSpace=wrap;html=1" },
-                {"Windows","image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VirtualMachineWindows.svg;" },
-                {"Linux","image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=12;image=img/lib/mscae/VM_Linux.svg;" }
+                {"Windows","image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=14;image=img/lib/mscae/VirtualMachineWindows.svg;" },
+                {"Linux","image;sketch=0;aspect=fixed;html=1;points=[];align=center;fontSize=14;image=img/lib/mscae/VM_Linux.svg;" }
             };
             List<string> config = new List<string>
             {
@@ -361,7 +361,7 @@ namespace jVision.Server.Controllers
             myExport.AddContent(config);
             var attacker_parent = new List<Topology>
             {
-                new Topology{id="attacker_parent",name="Attacker Network", refs="router",cat="sunet",width="180",height="200",parent="",identity="attacker_parent" }
+                new Topology{id="attacker_parent",name="Middleast-2", refs="router",cat="sunet",width="180",height="200",parent="",identity="attacker_parent" }
             };
             myExport.AddRows(attacker_parent);
             var attacker_record = new List<Topology>
@@ -380,7 +380,7 @@ namespace jVision.Server.Controllers
                 var subnet_boxes = bl.Where(s => s.Subnet.Equals(subnet)).ToList();
                 var subnet_parent = new List<Topology>
                 {
-                    new Topology{id=subnet,name=$"CHANGE ME<br>{subnet}",refs="",cat="sunet",width="580",height="360",parent="",identity=subnet}
+                    new Topology{id=subnet,name=$"CHANGE ME<br>{subnet}",refs="",cat="sunet",width="640",height="400",parent="",identity=subnet}
                 };
                 myExport.AddRows(subnet_parent);
                 foreach(var box in subnet_boxes)
@@ -388,7 +388,7 @@ namespace jVision.Server.Controllers
                     var os = string.IsNullOrEmpty(box.Os) ? "default" : box.Os;
                     var comp_record = new List<Topology>
                     {
-                        new Topology{id=$"subnet{box.Ip}", name=$"{box.Hostname}<br>{box.Ip}",refs="",cat=os,width="82",height="72",parent="",identity=$"subnet{box.Ip}"}
+                        new Topology{id=$"subnet{box.Ip}", name=$"{box.Hostname}<br>{box.Ip}",refs="",cat=os,width="100",height="84",parent="",identity=$"subnet{box.Ip}"}
                     };
                     myExport.AddRows(comp_record);
                 }

@@ -50,18 +50,19 @@ namespace jVision.Server.Download
         // dashed container ("All Ports Tours Network").
         private const int OuterFrameTopY = 400;
         private const int OuterFramePad = 22;
-        private const string OuterFrameLabel = "CPTC Network";
+        private const string OuterFrameLabel = "BFF Network";
 
         // Category / sub-environment box — width sized so a 3-column grid
         // of cells still leaves each cell wide enough to fit a full FQDN
-        // like "navigation.allports.tours" without clipping.
-        private const int SubBoxMinW = 580;
-        private const int SubBoxHeaderH = 28;
-        private const int SubBoxPadX = 22, SubBoxPadY = 14;
+        // like "navigation.allports.tours" without clipping even at the
+        // slightly larger label font size used below.
+        private const int SubBoxMinW = 660;
+        private const int SubBoxHeaderH = 32;
+        private const int SubBoxPadX = 22, SubBoxPadY = 16;
 
         // Device cell (icon + IP label + optional domain chip)
         private const int IconW = 52, IconH = 45;
-        private const int CellW = 120, CellH = 95;
+        private const int CellW = 180, CellH = 112;
         private const int DevPerRow = 3;
 
         private const int SubGapX = 30, SubGapY = 24;
@@ -286,8 +287,7 @@ namespace jVision.Server.Download
             // Arrow router -> engagement frame
             sb.Append(DownArrow(layout.CanvasW / 2, RouterTopY + RouterH + 20, layout.OuterFrameY - 8));
 
-            // Outer "CPTC Network" frame that wraps every category box —
-            // mirrors the reference diagram's engagement-scope container.
+            // Outer "BFF Network" frame that wraps every category box.
             sb.Append(EngagementFrame(layout.OuterFrameX, layout.OuterFrameY,
                                       layout.OuterFrameW, layout.OuterFrameH,
                                       OuterFrameLabel));
@@ -366,7 +366,7 @@ namespace jVision.Server.Download
             var sb = new StringBuilder();
             sb.Append($"<g>");
             sb.Append($"<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"none\" stroke=\"#333\" stroke-width=\"1.4\" stroke-dasharray=\"4,3\"/>");
-            sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + 22}\" text-anchor=\"middle\" font-size=\"14\" font-weight=\"700\" fill=\"#111\">Attacker Network</text>");
+            sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + 22}\" text-anchor=\"middle\" font-size=\"16\" font-weight=\"700\" fill=\"#111\">Middleast-2</text>");
 
             // Hooded-figure monitor icon centered horizontally, near top of the box.
             int ix = x + (w - 100) / 2;
@@ -387,8 +387,8 @@ namespace jVision.Server.Download
             sb.Append("</g>");
 
             // Sub-label
-            sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + h - 24}\" text-anchor=\"middle\" font-size=\"12\" fill=\"#111\">VDI</text>");
-            sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + h - 10}\" text-anchor=\"middle\" font-size=\"12\" fill=\"#111\">Infrastructure</text>");
+            sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + h - 26}\" text-anchor=\"middle\" font-size=\"13\" fill=\"#111\">VDI</text>");
+            sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + h - 10}\" text-anchor=\"middle\" font-size=\"13\" fill=\"#111\">Infrastructure</text>");
             sb.Append($"</g>\n");
             return sb.ToString();
         }
@@ -442,7 +442,7 @@ namespace jVision.Server.Download
             sb.Append($"<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" fill=\"none\" stroke=\"#333\" stroke-width=\"1.2\" stroke-dasharray=\"4,3\"/>");
             // Header bar (solid rectangle around the title, no fill)
             sb.Append($"<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{SubBoxHeaderH}\" fill=\"none\" stroke=\"#333\" stroke-width=\"1\"/>");
-            sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + 20}\" text-anchor=\"middle\" font-size=\"13\" font-weight=\"700\" fill=\"#111\">{XmlEscape(label)}</text>");
+            sb.Append($"<text x=\"{x + w / 2}\" y=\"{y + 22}\" text-anchor=\"middle\" font-size=\"15\" font-weight=\"700\" fill=\"#111\">{XmlEscape(label)}</text>");
             sb.Append($"</g>\n");
 
             // Device grid inside sub-box
@@ -678,17 +678,18 @@ namespace jVision.Server.Download
                 sb.Append(WinTileMonitor(ix, top));
             else
                 sb.Append(LinuxMonitor(ix, top));
-            int labelY = top + IconH + 18;
-            sb.Append($"<text x=\"{cx}\" y=\"{labelY}\" text-anchor=\"middle\" font-size=\"12\" font-weight=\"700\" fill=\"#111\">{XmlEscape(b.Ip ?? "")}</text>");
+            int labelY = top + IconH + 20;
+            sb.Append($"<text x=\"{cx}\" y=\"{labelY}\" text-anchor=\"middle\" font-size=\"14\" font-weight=\"700\" fill=\"#111\">{XmlEscape(b.Ip ?? "")}</text>");
 
             // Full FQDN directly under the IP — plain black text, no
             // outline. Cell width is sized so labels like
-            // "navigation.allports.tours" fit without clipping.
+            // "navigation.allports.tours" fit without clipping even at the
+            // bumped-up domain font size.
             var domain = (b.Domain ?? "").Trim();
             if (domain.Length > 0)
             {
                 sb.Append(FormattableString.Invariant(
-                    $"<text x=\"{cx}\" y=\"{labelY + 14}\" text-anchor=\"middle\" font-size=\"10\" fill=\"#111\">{XmlEscape(domain)}</text>"));
+                    $"<text x=\"{cx}\" y=\"{labelY + 18}\" text-anchor=\"middle\" font-size=\"12\" fill=\"#111\">{XmlEscape(domain)}</text>"));
             }
 
             sb.Append($"</g>\n");
@@ -872,8 +873,8 @@ namespace jVision.Server.Download
 
                 // Attacker box (dashed swimlane) + hooded-figure monitor icon
                 // child so the drawio file carries the same artwork as the PNG.
-                DrawioVertex(w, "attacker", "1", "Attacker Network",
-                    "swimlane;html=1;fontStyle=1;startSize=26;fillColor=none;strokeColor=#333333;strokeWidth=1.4;dashed=1;dashPattern=4 3;fontColor=#111111;fontSize=13;",
+                DrawioVertex(w, "attacker", "1", "Middleast-2",
+                    "swimlane;html=1;fontStyle=1;startSize=28;fillColor=none;strokeColor=#333333;strokeWidth=1.4;dashed=1;dashPattern=4 3;fontColor=#111111;fontSize=16;",
                     layout.AttackerX, AttackerTopY, AttackerW, AttackerH);
                 // Icon is drawn with coordinates relative to its parent cell
                 // (the swimlane); the 26 px startSize is included so the icon
@@ -894,7 +895,7 @@ namespace jVision.Server.Download
                 // Outer engagement container so operators can drag the whole
                 // network as one unit in draw.io.
                 DrawioVertex(w, "engagement", "1", OuterFrameLabel,
-                    "swimlane;html=1;fontStyle=1;startSize=26;fillColor=none;strokeColor=#333333;strokeWidth=1.4;dashed=1;dashPattern=6 4;fontColor=#111111;fontSize=13;",
+                    "swimlane;html=1;fontStyle=1;startSize=30;fillColor=none;strokeColor=#333333;strokeWidth=1.4;dashed=1;dashPattern=6 4;fontColor=#111111;fontSize=15;",
                     layout.OuterFrameX, layout.OuterFrameY, layout.OuterFrameW, layout.OuterFrameH);
 
                 // Category sub-environments and their hosts
@@ -905,7 +906,7 @@ namespace jVision.Server.Download
                     string subId = $"sub_{i}";
                     // draw.io swimlane coords are absolute for top-level children of "1".
                     DrawioVertex(w, subId, "1", category,
-                        "swimlane;html=1;fontStyle=1;startSize=26;fillColor=none;strokeColor=#333333;strokeWidth=1.2;dashed=1;dashPattern=4 3;fontColor=#111111;fontSize=12;",
+                        "swimlane;html=1;fontStyle=1;startSize=30;fillColor=none;strokeColor=#333333;strokeWidth=1.2;dashed=1;dashPattern=4 3;fontColor=#111111;fontSize=15;",
                         x, y, sw, sh);
 
                     int gridX = SubBoxPadX;
@@ -926,7 +927,7 @@ namespace jVision.Server.Download
                                        : (!string.IsNullOrEmpty(host.Domain) ? host.Domain : "");
                         string label = (host.Ip ?? "") + (string.IsNullOrEmpty(second) ? "" : "<br>" + second);
                         string style = "shape=image;html=1;image=" + DrawioHostIconUrl(host) +
-                                       ";imageAspect=0;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;fontSize=11;fontStyle=1;fontColor=#111111;";
+                                       ";imageAspect=0;labelPosition=center;verticalLabelPosition=bottom;align=center;verticalAlign=top;fontSize=13;fontStyle=1;fontColor=#111111;";
                         DrawioVertex(w, $"h_{i}_{hIdx}", subId, label, style, hx, hy, IconW, IconH);
                     }
                 }
