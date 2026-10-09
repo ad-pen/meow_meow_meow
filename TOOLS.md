@@ -223,8 +223,74 @@ there would be nothing to attribute. Offensive payloads live on Kali (above).
 | `Snaffler.exe` | pinned 1.0.244 — share-content hunting |
 | PuTTY scrollback | 10 000 lines |
 
-Switches: `-SkipDefender`, `-SkipBloodHound`. Has its own pin table (PowerShell
-cannot source `lib.sh`) and writes its own `~/pins.lock` rows.
+Switches: `-SkipDefender`, `-SkipBloodHound`, `-Mobile`. Has its own pin table
+(PowerShell cannot source `lib.sh`) and writes its own `~/pins.lock` rows.
+
+### `-Mobile` — the mobile kit, and why the emulators live here
+
+Gated exactly like `all.sh --mobile`: **~5.9 GB of downloads, well over 10 GB on
+disk.** Mobile/AI owner only. A mobile-only box is `-Mobile -SkipBloodHound`.
+
+| Item | Source | Notes |
+|---|---|---|
+| `jadx` 1.5.6 · `adb` 37.0.0 · `python3` | choco | `python3` is only there because frida has no choco package |
+| `AndroidStudio` | choco | ~4 GB installed |
+| `temurin17` | choco | **not** a duplicate of `temurin11` — see the JDK conflict below |
+| `frida-tools` | pip | `frida-server` is deliberately **not** bundled; its version must match the client, so fetch the `android-x86_64` build while egress exists |
+| cmdline-tools 23.0 | **pinned**, direct from Google | gives `sdkmanager`/`avdmanager` |
+| `platform-tools` · `emulator` | `sdkmanager` | emulator is 508 MB |
+| **`system-images;android-37.1;google_apis_ps16k;x86_64`** | `sdkmanager` | 2.2 GB → AVD `cptc-api371` |
+| **`system-images;android-33;google_apis;x86_64`** | `sdkmanager` | 1.7 GB → AVD `cptc-api33-noplay` |
+
+**Why the emulators are on Windows and not Kali.** `all.sh` installs the same
+analysis kit but says outright that its Android Studio is an APK/layout inspector,
+not a place to run an app, because the emulator needs nested virtualisation a Kali
+guest will not get. A Windows host can expose WHPX, so this is the only box in the
+build where an emulator might boot — and if *this* box is a VM the same ceiling
+applies, which is why the block ends by reading `Win32_ComputerSystem
+.HypervisorPresent` and saying so.
+
+⚠️ **Why API 33 must NOT have the Play Store — this is the whole point, not a
+preference.** Google ships three flavours of each image: `default` (AOSP),
+`google_apis` (Google APIs, **no** Play Store) and `google_apis_playstore`. Only
+the first two give a root shell; on a Play Store image `adb root` is refused
+outright because those ship the production verified-boot configuration. **No root
+→ no `frida-server` in `/data/local/tmp` → no runtime instrumentation**, which is
+the only reason the emulator is there at all. `google_apis` beats `default`
+because it keeps Play Services, so apps needing them still run, while staying
+rootable.
+
+⚠️ **API 37.1 exists ONLY as a `ps16k` variant** (16 KB page size). There is no
+`system-images;android-37.1;google_apis;x86_64` — the last release using that
+naming is `37.0`. Verified against Google's own `sys-img` manifest on 2026-10-09,
+so do not "tidy" the tag away. Both AVDs are **x86_64**: an arm64 image on an x86
+host is fully emulated rather than virtualised and is unusably slow.
+
+⚠️ **The JDK conflict, and why `JAVA_HOME` is only changed for child processes.**
+Neo4j 4.4 runs on **JDK 11** and its Windows service wrapper resolves the JVM
+through the **machine-level** `JAVA_HOME`, which the BloodHound block sets on
+purpose. cmdline-tools rev 23 refuses to start on JDK 11 — it needs **17+**.
+Setting the machine `JAVA_HOME` to 17 would silently break Neo4j at its next
+service start and BloodHound would stop connecting for a reason nobody would trace
+back to the mobile kit. `$env:JAVA_HOME` is process-scoped, so it is pointed at 17
+for the `sdkmanager`/`avdmanager` calls and restored immediately after.
+
+**Pin provenance for cmdline-tools:** Google publishes a SHA-**1** and a size in
+`repository2-3.xml`, not a SHA-256. Both were checked against the download — size
+`154957218` exact, SHA-1 `57d04f2d…` exact — and the pinned SHA-256 was computed
+from those same verified bytes. The script does **not** use the SDK bundled inside
+Android Studio: that one is not populated until someone clicks through the Studio
+first-run wizard, so a script depending on it works on a machine already used by
+hand and fails on a fresh one.
+
+**Tested without a Windows box:** parse-checked under pwsh 7.6.6, the pinned
+cmdline-tools hash verified through the real `Get-Pinned` against the real 155 MB
+archive, and the AVD loop exercised on all four branches (fresh · already exists ·
+image failed · `avdmanager` cannot run). That last one is why AVD creation is
+**confirmed by re-listing rather than by exit code**: if `avdmanager` cannot be
+launched, `$LASTEXITCODE` keeps the *previous* command's value — often 0 — and an
+exit-code test reports success for a tool that never ran. Same mistake
+`Get-Pinned` used to make with a quarantined file.
 
 ⚠️ **It needs internet.** Chocolatey and every download reach the public net, so run
 it during prep, not on engagement morning. Defender RTM and the firewall are

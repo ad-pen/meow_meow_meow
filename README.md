@@ -85,7 +85,13 @@ box otherwise has none of. It is self-contained on purpose — no sourcing of
 ```powershell
 powershell -ep bypass
 .\windows.ps1                  # -SkipDefender / -SkipBloodHound
+.\windows.ps1 -Mobile          # MOBILE/AI OWNER ONLY - adds ~5.9 GB
 ```
+
+`-Mobile` adds Android Studio, the Android SDK, **two emulators** (API 37.1, and
+API 33 **without** the Play Store so it can be rooted for frida), `adb`, `jadx`
+and `frida-tools`. Same deal as `all.sh --mobile`: nobody else should pay for it.
+A mobile-only box is `-Mobile -SkipBloodHound`.
 
 ⚠️ **Needs internet. Run it during prep, not on engagement morning.**
 
@@ -101,7 +107,7 @@ powershell -ep bypass
 | `smol-all.sh` | Emergency rebuild — critical path only |
 | `lib.sh` | Shared helpers, the `$USER_HOME` resolver, the Burp installer, the **verification helpers** and the **artifact pin manifest** |
 | `pins.sh` | Record / verify the pinned sha256 values |
-| `windows.ps1` | Windows box: Burp, Snaffler, BloodHound 4.3.1 + Neo4j 4.4 |
+| `windows.ps1` | Windows box: Burp, Snaffler, BloodHound 4.3.1 + Neo4j 4.4. `-Mobile` adds the emulators |
 | `command_logging.sh` | Timestamped, credential-redacted shell log (zsh + bash) |
 | `burp_logging.sh`, `burp_logger.py` | Burp extension logging HTTP traffic to a readable file (run by `all.sh`, after Burp) |
 | `terminal_uniform.sh` | Identical terminal appearance across the team, for screenshots |
