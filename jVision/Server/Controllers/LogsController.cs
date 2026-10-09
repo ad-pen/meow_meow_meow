@@ -115,14 +115,17 @@ namespace jVision.Server.Controllers
 
                 // Most-recent IP per operator (case-insensitive on username to
                 // match how LogEntry.Operator is stored across clients).
-                var latestIpByOp = await _context.TeamIp
+                // GroupBy + inner OrderByDescending.First() isn't translatable
+                // by EF Core 5 against SQLite, so materialise the TeamIp rows
+                // first (tiny table: one row per operator) and reduce in memory.
+                var latestIpByOp = (await _context.TeamIp.ToListAsync())
                     .GroupBy(t => t.Operator)
                     .Select(g => new
                     {
                         Op = g.Key,
                         Ip = g.OrderByDescending(t => t.LastSeen).First().Ip,
                     })
-                    .ToListAsync();
+                    .ToList();
                 var ipMap = latestIpByOp.ToDictionary(
                     x => x.Op ?? "",
                     x => x.Ip,
