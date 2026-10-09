@@ -95,6 +95,25 @@ wJalrXUtnFEMIK7MDENGbPxRfiCY	aws configure set aws_secret_access_key wJalrXUtnFE
 ghp_AbCdEf123456	git clone https://user:ghp_AbCdEf123456@github.com/org/repo
 Nexus123	sudo impacket-GetUserSPNs -request -dc-ip 10.0.0.5 corp.com/pete:Nexus123
 Pass123	proxychains4 nxc smb 10.0.0.5 -u admin -p 'Pass123'
+hunter2	curl -X POST -d 'username=admin&passwordRepeat=hunter2' https://t/register
+hunter2	curl -X POST -d 'username=admin&password_confirmation=hunter2' https://t/register
+hunter2	curl -X POST -d 'newPassword=hunter2&oldPassword=hunter2' https://t/account
+hunter2	curl -X POST -d 'password2=hunter2' https://t/signup
+hunter2	curl -X POST -d 'userpass=hunter2&db_pw=hunter2' https://t/cfg
+hunter2	curl -d '{"username":"admin","passwordRepeat":"hunter2"}' https://t/api
+hunter2	curl -d '{"newPassword":"hunter2"}' https://t/api
+hunter2	curl 'https://t/reset?confirm_password=hunter2&id=1001'
+hunter2	curl -X POST -d 'clientSecret=hunter2' https://t/oauth/token
+hunter2	curl -X POST -d 'x-api-key=hunter2' https://t/api
+hunter2	curl -X POST -d 'auth_token=hunter2&id_token=hunter2' https://t/api
+hunter2	curl -X POST -d 'otp=hunter2&mfa=hunter2' https://t/verify
+hunter2	curl -X POST -d 'recovery_code=hunter2' https://t/2fa
+hunter2	curl -X POST -d 'private_key=hunter2&ssh_key=hunter2' https://t/keys
+hunter2	curl -X POST -d 'connection_string=hunter2' https://t/admin/db
+hunter2	curl -X POST -d 'security_answer=hunter2' https://t/recover
+hunter2	curl -X POST -d 'signature=hunter2&hmac=hunter2' https://t/api
+hunter2	curl -X POST -d 'session_id=hunter2' https://t/api
+aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0	curl -d 'h=aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0' https://t/pth
 CASES
 
 # Commands that must come through UNTOUCHED. Over-redaction is a real defect: it
@@ -109,6 +128,13 @@ svc_ldap@corp.com	certipy find -u svc_ldap@corp.com -p 'lDaP_1n_th3_cle4r!' -dc-
 10.0.0.5	nxc smb 10.0.0.5 -u administrator -p 'Summer2026!'
 corp.com	bloodhound-python -d corp.com -u fsmith -p Thestrokes23 -ns 10.0.0.5 -c all
 users.txt	kerbrute passwordspray -d corp.com users.txt 'Welcome123!'
+1001	curl 'https://t/api?ticketId=1001'
+season	curl 'https://t/api?ticket_type=season&passType=season'
+Lucas	curl 'https://t/api?passenger=Lucas&passholder=Lucas'
+butterfamilyfarms	curl 'https://t/api?hashtag=butterfamilyfarms'
+Kathleen	curl 'https://t/news?author=Kathleen'
+SUMMER20	curl 'https://t/api?code=SUMMER20'
+ride_id	curl 'https://t/api?key=ride_id'
 KEEP
 
 # ---------------------------------------------------------------------------
@@ -163,12 +189,18 @@ import re, sys
 # Java classes (which only exist inside Jython). Everything from the "Redaction"
 # banner up to the IBurpExtender class is pure-Python and self-contained.
 src = open(sys.argv[1]).read()
-# Anchor on _FULL_KEYS, not on the "# Redaction" banner: that string also appears
-# in the file's header comment, so anchoring there swept in `from burp import ...`
-# and the import failed outside Jython. _FULL_KEYS is the first line of the actual
-# redaction code and everything from there to BurpExtender is pure Python.
-start = src.index("_FULL_KEYS")
-end = src.index("class BurpExtender")
+# Anchor on the explicit markers burp_logger.py carries for this purpose. Two
+# earlier anchors were wrong in opposite directions: the "# Redaction" banner also
+# appears in the file's header comment, so it swept in `from burp import ...` and
+# the import failed outside Jython; its replacement, _FULL_KEYS, worked until that
+# symbol was restructured into _FULL_SPECS, at which point the whole Burp half of
+# this test reported "could not import" instead of running. A marker that exists
+# only to be an anchor cannot drift out from under us like that.
+try:
+    start = src.index("# >>> redaction-begin")
+    end = src.index("# <<< redaction-end")
+except ValueError:
+    sys.exit("redaction-begin/redaction-end markers missing from burp_logger.py")
 ns = {"re": re}
 exec(compile(src[start:end], "burp_logger_redaction", "exec"), ns)
 ru, rb = ns["_redact_url"], ns["_redact_body"]
@@ -180,6 +212,20 @@ URL_CASES = [
                        "https://t/api?ntlm=aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0"),
     ("hunter2",        "https://t/login?pass=hunter2"),
     ("hunter2",        "https://t/login?pw=hunter2"),
+    # the 2026-10-09 class: decoration around a known root
+    ("hunter2",        "https://t/reg?passwordRepeat=hunter2"),
+    ("hunter2",        "https://t/reg?password_confirmation=hunter2"),
+    ("hunter2",        "https://t/reg?newPassword=hunter2&user=admin"),
+    ("hunter2",        "https://t/reg?password2=hunter2"),
+    ("hunter2",        "https://t/api?x-api-key=hunter2"),
+    ("hunter2",        "https://t/api?auth_token=hunter2"),
+    ("hunter2",        "https://t/api?session_id=hunter2"),
+    ("hunter2",        "https://t/2fa?otp=hunter2&mfa=hunter2"),
+    ("hunter2",        "https://t/keys?private_key=hunter2"),
+    ("hunter2",        "https://t/db?connection_string=hunter2"),
+    ("hunter2",        "https://t/api?signature=hunter2"),
+    ("aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0",
+                       "https://t/pth?h=aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0"),
 ]
 BODY_CASES = [
     ("hunter2",        '{"username":"admin","password":"hunter2"}'),
@@ -189,12 +235,37 @@ BODY_CASES = [
     ("Summer2026!",    'username=admin&password=Summer2026!'),
     ("payload.sig",    '{"access_token":"eyJhbGciOiJIUzI1NiJ9.payload.sig"}'),
     ("topsecret",      'secret=topsecret&apikey=ABCDEF123456'),
+    ("hunter2",        '{"username":"admin","passwordRepeat":"hunter2"}'),
+    ("hunter2",        '{"newPassword":"hunter2","oldPassword":"hunter2"}'),
+    ("hunter2",        '{"password_confirmation":"hunter2"}'),
+    ("hunter2",        'username=admin&passwordRepeat=hunter2'),
+    ("hunter2",        'userpass=hunter2&db_pw=hunter2'),
+    ("hunter2",        '{"clientSecret":"hunter2"}'),
+    ("hunter2",        '{"security_answer":"hunter2"}'),
+    ("hunter2",        '{"ssh_key":"hunter2"}'),
+    ("hunter2",        'recovery_code=hunter2&backup_code=hunter2'),
+    ("abc123deadbeef", 'Authorization: Basic abc123deadbeef=='),
+    ("abc123deadbeef", '{"h":"Bearer abc123deadbeef"}'),
 ]
 KEEP_CASES = [
     ("admin",   "https://t/api?password=hunter2&user=admin",  ru),
     ("1001",    "https://t/order?id=1001",                    ru),
     ("admin",   '{"username":"admin","password":"hunter2"}',  rb),
     ("12345",   '{"amount":100,"account":"12345"}',           rb),
+    # the client sells tickets and passes: these are ticketing/IDOR evidence,
+    # not secrets, and over-redacting them costs us report detail.
+    ("1001",    "https://t/api?ticketId=1001",                 ru),
+    ("season",  "https://t/api?ticket_type=season",            ru),
+    ("ABC123",  "https://t/api?parkTicket=ABC123",             ru),
+    ("season",  "https://t/api?passType=season",               ru),
+    ("Lucas",   "https://t/api?passenger=Lucas",               ru),
+    ("34.2",    "https://t/map?mapPin=34.2",                   ru),
+    ("true",    "https://t/api?pinned=true",                   ru),
+    ("bff",     "https://t/api?hashtag=bff",                   ru),
+    ("Kathleen","https://t/news?author=Kathleen",              ru),
+    ("SUMMER20","https://t/api?code=SUMMER20",                 ru),
+    ("ride_id", "https://t/api?key=ride_id",                   ru),
+    ("Buttercup", '{"passholder":"Buttercup"}',                rb),
 ]
 
 for secret, case in URL_CASES:

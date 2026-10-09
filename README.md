@@ -133,8 +133,14 @@ Each command log line is `<time> (exit <code>) <command>`.
 
 **Redaction policy: every secret is redacted, every username is kept in full.**
 Passwords, NTLM/LM hashes, Kerberos keys and tickets, and web secrets
-(`Authorization`/`Cookie`/API-key headers, `--token`, basic auth, `password=` in
-bodies and JSON) become `[REDACTED]`. Usernames, domains, hostnames and IPs are
+(`Authorization`/`Cookie`/API-key headers, `--token`, basic auth, and `key=value`
+secrets in query strings, bodies and JSON) become `[REDACTED]`. Field names are
+matched **with their decoration**, so `passwordRepeat`, `newPassword` and
+`password_confirmation` are caught too, as are one-time codes (`otp`, `mfa`,
+`recovery_code`), key material (`x-api-key`, `ssh_key`, `private_key`), DB
+connection strings and request signatures. The client's own vocabulary is
+deliberately left alone — `ticketId`, `ticket_type`, `passType`, `passholder`
+and `passenger` are ticketing evidence, not secrets. Usernames, domains, hostnames and IPs are
 kept deliberately — the log exists so someone can answer "which account touched
 this host at time T", and a masked username defeats the only question it is there
 to answer. **The command still runs unmodified; only the logged text is scrubbed.**
@@ -156,7 +162,12 @@ That test exists because the two redactors enforce the same policy in different
 languages against different input, and **they had already drifted** — one of them
 was logging `pass=` in clear while the other redacted it, and seven installed
 tools were leaking `-p <password>` because the shell side gates that flag behind a
-tool allowlist they were missing from. Run it after touching either redactor.
+tool allowlist they were missing from. The 2026-10-09 pass found the two halves
+failing on the *same* input in *different* ways: the Burp side was anchored with
+`\b`, so every prefixed field name (`newPassword`, `new_password`) went in clear,
+while both sides required `=` immediately after the root, so every suffixed one
+(`passwordRepeat`, `password2`) did too — 81 of 110 realistic field names leaked.
+Run it after touching either redactor.
 
 Then confirm it live:
 
