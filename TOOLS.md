@@ -232,6 +232,80 @@ disabled — the **pre-change state is written to
 `~/pre-change-security-state.txt`** first, which is what makes the change
 reversible and what to quote on the Artifact & Configuration Changes sheet.
 
+### First real run (Windows 11, 2026-10-09) — 3 failures, all fixed
+
+A teammate ran it on Windows 11 and it failed three ways. Every line reference in
+his report checked out, and all three were real code defects, not environment
+luck. Note the file had taken **zero** commits since it was written while the Kali
+side took 17 — this is what an unexercised script looks like.
+
+1. 🔴 **`Get-Pinned` reported SUCCESS for files that were not there.** Defender
+   quarantined `BloodHound.zip` and `Snaffler.exe` *after* `Invoke-WebRequest`
+   returned cleanly. The function then compounded it three times over: `Get-FileHash`
+   on a missing path yields `$null`, `$null.ToLower()` errors but does **not** stop
+   the script (`$ErrorActionPreference` is `Continue`), a **null hash was written to
+   `pins.lock`** as though it were a real record, and `return $true` was still
+   reached. The caller failed later at `Expand-Archive` with an unrelated-looking
+   `.ctor` exception. Now: existence+size guard after download, null-safe hash, and
+   `return $false` rather than a poisoned manifest row.
+2. 🔴 **The in-process PATH was refreshed before the install loop, not after.** The
+   early refresh is deliberate — it makes `choco` callable right after a fresh
+   Chocolatey install — but it meant nothing installed in the loop was on PATH when
+   verification ran, producing `[+] git installed` followed by `[-] git FAILED`
+   thirty lines later. It is now refreshed **again** after the loop. A false FAIL is
+   worse than no check: it is how people learn to ignore the checker.
+3. 🔴 **The Defender disable was never verified.** `Set-MpPreference
+   -DisableRealtimeMonitoring $true` **returns success and silently does nothing**
+   when Tamper Protection is on, so `-ErrorAction Stop` and the `catch` never fire —
+   the script printed `[+] Defender real-time monitoring disabled` and then lost two
+   files to Defender anyway. Now reads `Get-MpComputerStatus` back and reports
+   `RealTimeProtectionEnabled` / `IsTamperProtected` honestly, with the GUI path
+   spelled out. Also set `SubmitSamplesConsent NeverSend`, `MAPSReporting Disabled`
+   and `DisableBlockAtFirstSeen` — separate switches from RTM, still active during
+   the failed run, and the first of those is what stops Defender uploading our
+   tooling to Microsoft.
+
+⚠️ **Exclusions were considered and deliberately NOT added.** `Add-MpPreference
+-ExclusionPath` works even under Tamper Protection and would have made his run
+succeed, but it was declined in favour of keeping the footprint on an
+organiser-provided machine minimal. **Consequence, by design:** on any box where
+Tamper Protection is on, this script now *stops at the first download with an
+accurate error* instead of lying. **Turn Tamper Protection off in the Defender GUI
+before running it** — PowerShell cannot.
+
+Also fixed in the same pass, found here rather than in his report:
+
+- **All three pins now carry real sha256 values** (BloodHound 4.3.1, Neo4j 4.4.19,
+  Snaffler 1.0.244) — they were all `TBD`, so everything downloaded unverified.
+  ⚠️ They were computed from a direct download on Linux with no AV in the path,
+  each file validated first (byte count equals the server's `Content-Length`, both
+  zips pass an integrity test, `Snaffler.exe` begins `MZ`). They were **not**
+  harvested from a `pins.lock` produced by a Windows run, which was the suggested
+  method — defect 1 means `Get-Pinned` can record the hash of a quarantined file,
+  so that method would have baked the bug in permanently.
+- **No retry on a 108 MB and a 116 MB download**, which is the defect class that cost
+  the Kali side a package in three of seven runs. Now two attempts, **and the partial
+  is deleted between them** — without that, the skip-on-non-empty check at the top of
+  `Get-Pinned` would report a half-written zip as "already present (skip)" forever.
+- **Neo4j's Windows zip is not spec-compliant:** all **201** entries use backslash
+  separators, none use forward slashes (BloodHound's 18,300 entries are normal).
+  Windows treats backslash as a separator so `Expand-Archive` does the right thing,
+  but it makes the `neo4j-community-*` directory lookup load-bearing — and that
+  lookup had no failure branch: it said nothing, deleted the zip, and let
+  `install-service` fail later for no visible reason. **Worth eyeballing on the next
+  Windows run.**
+- The **bolt-port poll fell through silently** when its 90 s deadline expired; the
+  only symptom was a bare `FAILED` in verification with nothing saying we had waited.
+- Four stale `ad.sh` references (it is now a thin wrapper for `all.sh --ad-only`) and
+  a `CE 9.4.0` comment that run 7 showed is `9.7.0~rc4`.
+
+⚠️ **Still never run successfully, and never run at all on the real target.** His
+box was Windows 11; the VDI is **Windows Server 2016** (KB §7), where Tamper
+Protection and OneDrive redirection largely do not apply. A OneDrive-redirected
+Desktop warning was added because that is what bit him — tooling written there syncs
+to Microsoft and is scanned server-side regardless of any local Defender setting —
+but it is a prep-laptop hazard, not a VDI one.
+
 ## Cloud
 
 | Tool | Src | Notes |
