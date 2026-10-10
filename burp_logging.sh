@@ -137,30 +137,42 @@ chmod 600 "$LOG_FILE"
 print_success "Log file  -> $LOG_FILE (mode 0600)"
 
 # --- 4. Auto-load config: patch existing, or seed a fresh file ------------
-# Burp stores user options in ~/.BurpSuite/. Two schemas exist:
-#   Modern (Burp >= 2023.x): UserConfig.json, with the Jython jar path at
-#     user_options.extender.python.location_of_jython_standalone_jar_file
-#   Legacy (older builds):   UserConfig{Community,Pro}.json, with the path at
-#     user_options.extender.jython_settings.jython_jar
-# The extension list (user_options.extender.extensions) is the same in both.
-# Burp tolerates partial configs -- any missing top-level keys fall back to
-# defaults -- so on a fresh Kali (Burp never launched) we can seed a minimal
-# UserConfig.json instead of asking the operator to touch Burp's menus.
+# Burp stores user options in ~/.BurpSuite/ in THREE sibling files that modern
+# Burp writes depending on edition and version:
+#   UserConfig.json           -- shared, written by Burp >= mid-2025
+#   UserConfigCommunity.json  -- Community-edition, written by every Community build
+#   UserConfigPro.json        -- Pro, same role for Pro builds
+# All three use the SAME schema today:
+#   user_options.extender.python.location_of_jython_standalone_jar_file
+#   user_options.extender.extensions (list)
+# Earlier code here switched on the filename and wrote a legacy
+# user_options.extender.jython_settings.jython_jar for the *Community/*Pro files.
+# That schema is NOT what current Burp Community reads, so on a fresh Kali Burp
+# would ignore the seed, find no jython jar, and the extension would never load.
+# One schema now, used for every filename.
+#
+# ON PATCH: only touch the files that already exist (the "if any exist" branch).
+# ON SEED (fresh Kali, Burp never launched): seed ALL THREE names. Burp
+# Community on first launch has been observed to write a defaults-only
+# UserConfigCommunity.json and ignore a lone UserConfig.json, dropping our
+# extension on the floor. Seeding every filename Burp might look at (and then
+# rewrite in place) covers the fresh-profile path at the cost of ~500 bytes.
 
 if ! command -v python3 >/dev/null 2>&1; then
     print_warning "python3 not available; skipping config auto-patch."
     patched_any=0
 else
     patched_any=0
-    # Prefer the modern file if present; else patch any legacy ones; else
-    # seed the modern name from scratch.
-    if [ -f "$BURP_DIR/UserConfig.json" ]; then
-        targets=("$BURP_DIR/UserConfig.json")
-    else
-        targets=()
-        [ -f "$BURP_DIR/UserConfigCommunity.json" ] && targets+=("$BURP_DIR/UserConfigCommunity.json")
-        [ -f "$BURP_DIR/UserConfigPro.json" ] && targets+=("$BURP_DIR/UserConfigPro.json")
-        [ ${#targets[@]} -eq 0 ] && targets+=("$BURP_DIR/UserConfig.json")
+    targets=()
+    [ -f "$BURP_DIR/UserConfig.json" ]          && targets+=("$BURP_DIR/UserConfig.json")
+    [ -f "$BURP_DIR/UserConfigCommunity.json" ] && targets+=("$BURP_DIR/UserConfigCommunity.json")
+    [ -f "$BURP_DIR/UserConfigPro.json" ]       && targets+=("$BURP_DIR/UserConfigPro.json")
+    if [ ${#targets[@]} -eq 0 ]; then
+        targets=(
+            "$BURP_DIR/UserConfig.json"
+            "$BURP_DIR/UserConfigCommunity.json"
+            "$BURP_DIR/UserConfigPro.json"
+        )
     fi
 
     for cfg in "${targets[@]}"; do
@@ -176,7 +188,6 @@ else
         if python3 - "$cfg" "$JYTHON_JAR" "$EXT_DST" <<'PY'
 import json, os, sys
 cfg_path, jython_jar, ext_path = sys.argv[1], sys.argv[2], sys.argv[3]
-modern = os.path.basename(cfg_path) == "UserConfig.json"
 
 if os.path.exists(cfg_path):
     with open(cfg_path) as f:
@@ -187,28 +198,22 @@ else:
 uo = cfg.setdefault("user_options", {})
 ex = uo.setdefault("extender", {})
 
-if modern:
-    py = ex.setdefault("python", {})
-    py["location_of_jython_standalone_jar_file"] = jython_jar
-else:
-    js = ex.setdefault("jython_settings", {})
-    js["jython_jar"] = jython_jar
+py = ex.setdefault("python", {})
+py["location_of_jython_standalone_jar_file"] = jython_jar
 
 exts = ex.setdefault("extensions", [])
 # de-dup by extension_file so re-running the installer doesn't stack copies
 exts = [e for e in exts if e.get("extension_file") != ext_path]
-entry = {
+exts.append({
     "errors": "ui",
     "extension_file": ext_path,
     "extension_type": "python",
     "loaded": True,
     "name": "CPTC Engagement Logger",
     "output": "ui",
-}
-if modern:
-    entry["auto_reload"] = False
-    entry["use_ai"] = False
-exts.append(entry)
+    "auto_reload": False,
+    "use_ai": False,
+})
 ex["extensions"] = exts
 
 with open(cfg_path, "w") as f:

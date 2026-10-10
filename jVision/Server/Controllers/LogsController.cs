@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using ClosedXML.Excel;
@@ -174,6 +175,79 @@ namespace jVision.Server.Controllers
             return File(ms.ToArray(),
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 name);
+        }
+
+        // GET /logs/export.csv -- flat CSV: operator, timestamp, source, line.
+        // Same alias + scrub pipeline as the XLSX export so the two files are
+        // interchangeable for sharing.
+        [HttpGet("export.csv")]
+        public async Task<IActionResult> ExportCsv()
+        {
+            var all = await _context.LogEntry
+                .OrderBy(l => l.Operator).ThenBy(l => l.Timestamp)
+                .ToListAsync();
+
+            var opToAlias = await BuildAliasMap(all);
+
+            var sb = new StringBuilder();
+            sb.Append("operator,timestamp,source,line\n");
+            foreach (var l in all)
+            {
+                var opKey = l.Operator ?? "unknown";
+                var alias = opToAlias.TryGetValue(opKey, out var a) ? a : opKey;
+                var ts = l.Timestamp.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+                var line = ScrubLine(l.Line ?? "", opToAlias);
+                sb.Append(CsvField(alias)).Append(',')
+                  .Append(CsvField(ts)).Append(',')
+                  .Append(CsvField(l.Source ?? "")).Append(',')
+                  .Append(CsvField(line)).Append('\n');
+            }
+
+            var bytes = Encoding.UTF8.GetPreamble()
+                .Concat(Encoding.UTF8.GetBytes(sb.ToString()))
+                .ToArray();
+            var name = $"jvision-logs-{DateTime.UtcNow:yyyy-MM-dd-HHmm}.csv";
+            return File(bytes, "text/csv", name);
+        }
+
+        private async Task<Dictionary<string, string>> BuildAliasMap(List<LogEntry> all)
+        {
+            var distinctOps = all
+                .Select(l => l.Operator ?? "unknown")
+                .Distinct()
+                .OrderBy(o => o, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var latestIpByOp = (await _context.TeamIp.ToListAsync())
+                .GroupBy(t => t.Operator)
+                .Select(g => new
+                {
+                    Op = g.Key,
+                    Ip = g.OrderByDescending(t => t.LastSeen).First().Ip,
+                })
+                .ToList();
+            var ipMap = latestIpByOp.ToDictionary(
+                x => x.Op ?? "",
+                x => x.Ip,
+                StringComparer.OrdinalIgnoreCase);
+
+            var opToAlias = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            int unknownIdx = 0;
+            foreach (var op in distinctOps)
+            {
+                if (ipMap.TryGetValue(op, out var ip) && !string.IsNullOrWhiteSpace(ip))
+                    opToAlias[op] = ip;
+                else
+                    opToAlias[op] = $"unknown-{++unknownIdx}";
+            }
+            return opToAlias;
+        }
+
+        private static string CsvField(string s)
+        {
+            if (s == null) return "";
+            if (s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0) return s;
+            return "\"" + s.Replace("\"", "\"\"") + "\"";
         }
 
         private static string FormatLine(LogEntry l) =>
