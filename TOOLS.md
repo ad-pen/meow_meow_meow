@@ -19,7 +19,8 @@ see its header. Before the event, build against `REHEARSAL.md`.
 | `all.sh --ad-only` · `--no-ad` | run only / skip the AD section |
 | `all.sh --mobile` | the above **plus** the mobile kit and the nuclei-templates clone. `--mobile` still works as an alias |
 | `ad.sh` | **wrapper → `all.sh --ad-only`.** Kept because the name is in muscle memory and the printed checklist |
-| `windows.ps1` | the Windows box: Burp, Snaffler, BloodHound 4.3.1 + Neo4j 4.4.19 |
+| `windows.ps1` | the Windows box: Burp Community, Snaffler, PuTTY scrollback |
+| `windows-mobile.ps1` | the Windows box, mobile owner only: Android Studio, SDK, two emulators, adb, jadx, frida |
 | `smol-all.sh` | emergency rebuild, critical path only (~5 min) |
 | `lib.sh` | shared helpers, the `$USER_HOME` resolver, `install_burp_latest`, the **verification helpers** and the artifact **pin manifest** |
 | `pins.sh` | record / verify the pinned sha256 values — see `REHEARSAL.md` |
@@ -105,7 +106,7 @@ into the evidence layer. Boxes built before this change still have it: `sudo apt
 | `impacket-scripts` | D | apt package; `impacket-secretsdump` etc. |
 | `netexec` (`nxc`) | A + D | in both, so non-AD operators get it too; `crackmapexec` was dropped |
 | `bloodhound` | D | BloodHound CE 9.4.0 — own DB stack, `bloodhound-setup` then `bloodhound-start` |
-| `bloodhound.py` | D | `bloodhound-python` — **LEGACY** format collector, feeds BloodHound 4.3.1 on the Windows box |
+| `bloodhound.py` | D | `bloodhound-python` — **LEGACY** format collector. ⚠️ **Feeds nothing since 2026-10-11** — its only viewer was the Windows box. Drop it or re-add a legacy viewer |
 | `bloodhound-ce-python` | D | 🆕 **CE** format collector, feeds the CE instance on this box. **Both are installed because both viewers exist** — see the two-stack note below. Its absence was a real bug: `ad.sh` set up a CE viewer with only the legacy collector, so the graph path failed at ingest |
 | `krbrelayx` | D | 🆕 clone — **coercion + relay**, the half of AD that was entirely missing. `printerbug.py`, `addspn.py`, `dnstool.py`, `krbrelayx.py` |
 | `gMSADumper` | D | 🆕 clone — group-managed service account passwords |
@@ -136,23 +137,35 @@ into the evidence layer. Boxes built before this change still have it: `sudo apt
 | `enum4linux` | A + D | |
 | `smbclient` / `smbmap` / `nbtscan` | A | SMB enum, used from the AD flow |
 
-## ⚠️ Two BloodHound stacks — and why
-
-Mixing a legacy collection with a CE one **fails at ingest**; it does not degrade.
-The collectors are therefore kept in separate directories.
+## BloodHound — CE on Kali, and nothing on Windows
 
 | Viewer | Where | Fed by |
 |---|---|---|
 | **BloodHound CE 9.4.0** | Kali (`sudo bloodhound-start`) | `bloodhound-ce-python` · `windows/ce/SharpHound.exe` (2.x) · `azurehound` |
-| **BloodHound 4.3.1 legacy** | the Windows box (`windows.ps1`) | `bloodhound-python` · `windows/legacy/SharpHound.exe` (1.x) |
 
-Neither can be dropped:
+CE stays on Kali because **AzureHound v3 emits CE format only**, and cloud + on-prem
+landing in one graph is the entire reason AzureHound is installed.
 
-- **CE cannot run on the Windows box.** CE is a Docker Compose stack and its only
-  documented Windows install path is Docker Desktop, which is unsupported on every
-  edition of Windows Server. An on-box viewer therefore has to be legacy.
-- **CE cannot be dropped from Kali.** AzureHound v3 emits CE format only, and
-  cloud + on-prem landing in one graph is the entire reason AzureHound is installed.
+**The Windows legacy stack (BloodHound 4.3.1 + Neo4j 4.4.19) was removed 2026-10-11.**
+It was there to be a backup viewer for Kali's collections and could not be one:
+legacy cannot ingest a CE zip, CE cannot ingest a legacy one, **no converter exists**,
+and CE cannot run on Windows Server at all (Docker Compose, Linux containers —
+`bloodhound-cli` just wraps the same stack). A legacy viewer would have required its
+own separate legacy collection on the day, owned by nobody.
+
+**The backup is the zips, not a viewer:** keep collections on the officials-provided
+drive (KB §10.0 requires it regardless) and re-ingest on another of the six Kali
+boxes. Same format, no conversion.
+
+⚠️ **The legacy COLLECTORS are still built on Kali** — `bloodhound-python` and
+`windows/legacy/SharpHound.exe` (1.x) — and now feed nothing. Drop them or re-add a
+viewer; as it stands they emit zips nothing in the build can open.
+
+The Neo4j research is kept because it was expensive and may be needed again: 4.4.19
+is the version BloodHound 4.3.1's release notes name, Neo4j 5.x has a severe
+BloodHound ingest regression, choco's `neo4j-community` tracks 5.x so it was never
+usable, and all 201 entries in Neo4j's Windows zip use backslash separators the ZIP
+spec forbids.
 
 ## Windows payload set — `~/dropzone/windows/` (built by `ad.sh`)
 
@@ -209,33 +222,42 @@ team scoring us and contradicts the evidence layer this repo exists to provide �
 
 ## The Windows box — `windows.ps1`
 
-Its job is narrow: **BloodHound graph viewing and occasional dynamic mobile work.**
-No active testing runs from Windows, so there is no PowerShell evidence layer —
-there would be nothing to attribute. Offensive payloads live on Kali (above).
+Its job is narrow: **Burp as the mobile-traffic proxy, and Snaffler.** No active
+testing runs from Windows, so there is no PowerShell evidence layer — there would be
+nothing to attribute. Offensive payloads live on Kali (above), AD graph viewing is
+on Kali too (see above), and the Android kit is its own script (below).
 
 | Item | Notes |
 |---|---|
 | `burp-suite-free-edition` | Burp **Community** via choco — the mobile-traffic proxy. Pro is banned |
 | `openssh` · `git` · `flameshot` · `greenshot` | choco |
-| `temurin11` | JDK 11 — Neo4j 4.4's runtime |
-| **Neo4j 4.4.19** | pinned, downloaded direct. ⚠️ **NOT** choco's `neo4j-community`, which tracks 5.x. 4.4.19 is the version BloodHound 4.3.1's release notes name, and Neo4j 5 has a severe BloodHound ingest regression |
-| **BloodHound 4.3.1** | from `SpecterOps/BloodHound-Legacy`. ⚠️ the old repo's `BloodHoundAD/BloodHound` URL is **dead** — renamed/archived |
 | `Snaffler.exe` | pinned 1.0.244 — share-content hunting |
 | PuTTY scrollback | 10 000 lines |
 
-Switches: `-SkipDefender`, `-SkipBloodHound`, `-Mobile`. Has its own pin table
-(PowerShell cannot source `lib.sh`) and writes its own `~/pins.lock` rows.
+Switches: `-SkipDefender`. One pinned artifact (Snaffler), its own pin table
+(PowerShell cannot source `lib.sh`), and its own `~/pins.lock` rows.
 
-### `-Mobile` — the mobile kit, and why the emulators live here
+## The mobile kit — `windows-mobile.ps1`
+
+**Split out of `windows.ps1` on 2026-10-11**, where it was a `-Mobile` switch. One
+operator needs it, everyone else needs Burp and Snaffler, and the two halves shared
+nothing at runtime — so they are two files. Run `windows.ps1` first: it owns the
+Defender and firewall changes (and the pre-change record for the Artifact &
+Configuration Changes sheet), while this script only *reports* Defender's state.
 
 Gated exactly like `all.sh --mobile`: **~5.9 GB of downloads, well over 10 GB on
-disk.** Mobile/AI owner only. A mobile-only box is `-Mobile -SkipBloodHound`.
+disk.** Mobile/AI owner only.
+
+It makes **one** pinned download, so it carries a focused `Get-Verified` (url + sha
++ dest) rather than `windows.ps1`'s manifest-table `Get-Pinned`, and writes no
+`pins.lock` row — a hashtable lookup to reach a single constant is indirection, not
+structure.
 
 | Item | Source | Notes |
 |---|---|---|
 | `jadx` 1.5.6 · `adb` 37.0.0 · `python3` | choco | `python3` is only there because frida has no choco package |
 | `AndroidStudio` | choco | ~4 GB installed |
-| `temurin17` | choco | **not** a duplicate of `temurin11` — see the JDK conflict below |
+| `temurin17` | choco | the SDK command-line tools are rev 23 and need JDK 17+ |
 | `frida-tools` | pip | `frida-server` is deliberately **not** bundled; its version must match the client, so fetch the `android-x86_64` build while egress exists |
 | cmdline-tools 23.0 | **pinned**, direct from Google | gives `sdkmanager`/`avdmanager` |
 | `platform-tools` · `emulator` | `sdkmanager` | emulator is 508 MB |
@@ -247,7 +269,7 @@ analysis kit but says outright that its Android Studio is an APK/layout inspecto
 not a place to run an app, because the emulator needs nested virtualisation a Kali
 guest will not get. A Windows host can expose WHPX, so this is the only box in the
 build where an emulator might boot — and if *this* box is a VM the same ceiling
-applies, which is why the block ends by reading `Win32_ComputerSystem
+applies, which is why the script ends by reading `Win32_ComputerSystem
 .HypervisorPresent` and saying so.
 
 ⚠️ **Why API 33 must NOT have the Play Store — this is the whole point, not a
@@ -371,6 +393,83 @@ Protection and OneDrive redirection largely do not apply. A OneDrive-redirected
 Desktop warning was added because that is what bit him — tooling written there syncs
 to Microsoft and is scanned server-side regardless of any local Defender setting —
 but it is a prep-laptop hazard, not a VDI one.
+
+### BloodHound + Neo4j removed from the Windows box — 2026-10-11
+
+Cut on request, and the reason is worth recording because the stack looked
+load-bearing and was not. It was there to be a **backup viewer for Kali's
+collections**, and it could never have done that job:
+
+- Kali runs **CE 9.x**, so its zips are CE format. **Legacy 4.3.1 cannot ingest a CE
+  zip, CE cannot ingest a legacy one, and no converter exists** — SpecterOps' own
+  guidance is to re-collect with a collector downloaded from your CE instance.
+- So the Windows viewer needed **its own separate legacy collection**, taken on the
+  day, by a person nobody had assigned. The script's own NEXT STEPS said "FEED IT
+  LEGACY COLLECTIONS ONLY" at the end of a 900-line run, which is where that kind of
+  instruction goes to die.
+- **CE could not be stood up there instead.** It is a Docker Compose stack needing
+  *Linux* containers; Windows Server cannot provide those, and `bloodhound-cli` is
+  only a wrapper around the same compose stack. The one Docker-free Windows path is a
+  third-party WSL2 project that targets Windows 10/11, not Server.
+
+**What replaces it:** nothing on Windows. The backup is the **zips**, not a second
+viewer — keep them on the officials-provided drive (KB §10.0 makes that the only
+permitted storage for assessment data regardless) and re-ingest on any of the other
+five Kali boxes. Same format, no conversion, nothing to install, and it survives the
+box dying rather than depending on a second box being alive.
+
+Removed: both pins, the `temurin11` package, the JDK-11 discovery, the Neo4j extract
+/ service / password / 90 s bolt poll, the BloodHound extract and desktop shortcut,
+and 7 of the 20 verification checks. **901 → 694 lines.** This also deleted, rather
+than fixed, the worst defect in the file: `Membership.GeneratePassword(20,4)` draws
+from a punctuation set containing `% ^ & < > |`, the password was passed unquoted to
+a `.bat` (so cmd.exe re-parses it and splits on `&`), and the *intended* password was
+written to `neo4j-credentials.txt` — a recorded credential that does not work, in
+roughly two runs out of three.
+
+⚠️ **Loose end on the Kali side:** the legacy *collectors* are still built —
+`bloodhound-python` and `~/dropzone/windows/legacy/SharpHound.exe` (1.x) — and now
+feed no viewer anywhere in the build. Either drop them from `all.sh`/`ad.sh` or
+re-add a legacy viewer. Right now they emit zips nothing we install can open.
+
+### Mobile kit split into `windows-mobile.ps1` — 2026-10-11
+
+Same session, same reason: one file was doing two unrelated jobs for two different
+people. The `-Mobile` switch meant everyone who opened `windows.ps1` read ~180 lines
+about Android system images before reaching anything that applied to their box, and
+the two halves shared nothing at runtime beyond boilerplate.
+
+| | lines | code | for |
+|---|---|---|---|
+| `windows.ps1` | **450** | 260 | everyone — Burp Community, Snaffler, PuTTY |
+| `windows-mobile.ps1` | **480** | 294 | the mobile owner — Android Studio, SDK, 2 AVDs, adb, jadx, frida |
+
+901 → 450 + 480. The total is **higher**, not lower, because each script now carries
+its own elevation check, TLS line, print helpers, transcript, choco loop and
+verification summary — about 70 lines of boilerplate duplicated. That was a
+deliberate trade: the two scripts are run by **different people on different boxes**,
+so each one standing alone beats a third `windows-lib.ps1` that both must dot-source
+and whose path resolution is one more thing to get wrong. If the duplication starts
+drifting, the lib is the fix.
+
+Two things were trimmed rather than copied:
+
+- **`Get-Pinned` → `Get-Verified`.** The mobile script makes exactly one download, so
+  it takes url + sha + destination directly instead of looking a single constant up
+  in a manifest hashtable. Dropped the `TBD` branch (its one pin has a real hash) and
+  the `pins.lock` row. ~83 lines → ~45, and `windows.ps1` keeps the manifest version
+  because it owns the manifest contract.
+- **Defender is reported, not changed.** `windows.ps1` owns the disable *and* the
+  pre-change state file for the Artifact & Configuration Changes sheet. Two scripts
+  both writing that record would produce two accounts of one change, or one
+  overwriting the other — so the mobile script only reads `Get-MpComputerStatus` and
+  warns if real-time monitoring is still on, which matters because the 155 MB
+  command-line tools zip is a quarantine candidate and unpacking 3.9 GB of system
+  images with live scanning looks like a hang.
+
+`adb` is deliberately installed from choco **as well as** arriving with sdkmanager's
+`platform-tools`: a box whose 4.4 GB SDK download failed still gets a working `adb`
+for a physical device, and jadx static analysis needs no SDK at all.
 
 ## Cloud
 
@@ -516,7 +615,6 @@ include base packages a real VDI may already have, so they are upper bounds.
 | `golang` + compiling 4 Go tools | 42 MB + CPU | — | `all.sh` |
 | **Windows payload set** (19 pinned artifacts) | **~45 MB** | ~45 MB | `ad.sh` |
 | ↳ heaviest three: `LaZagne` 10 MB · `ligolo-proxy` 8 MB · `adPEAS` 5.8 MB | | | |
-| Neo4j 4.4.19 + BloodHound 4.3.1 + temurin11 | ~**400 MB** | — | `windows.ps1` |
 | *everything else added 2026-09-22* | **~1 MB total** | — | — |
 
 Two notes worth keeping:
@@ -535,7 +633,6 @@ Two notes worth keeping:
 | `~/dropzone/privesc/` | linpeas / winpeas / PowerUp / privesc / PrivescCheck |
 | `~/dropzone/ysoserial-all.jar` | ysoserial fat jar |
 | `/usr/local/bin/` | `chisel`, `upshell`, `kerbrute`, `windapsearch`, `azurehound`, `android-studio`, `ligolo-proxy` |
-| `C:\BloodHound\` | *(Windows box)* BloodHound 4.3.1, Neo4j 4.4.19, `neo4j-credentials.txt` |
 | `~/pre-change-security-state.txt` | *(Windows box)* Defender/firewall state before `windows.ps1` touched it |
 | `/opt/android-studio/` | Android Studio (`--mobile`) |
 | `~/go/bin/` | `httpx`, `httprobe`, `subfinder`, `waybackurls` |
@@ -559,7 +656,7 @@ Two notes worth keeping:
 **20** apt in `ad.sh` (+2 mono) · 14 apt in `start.sh` ·
 7 pip (A) + 1 pip (I) + 4 pip (D) · 4 Go ·
 **32 pin-manifest artifacts** (all hash-verified; `powerup` removed) · **21 `fetch_pinned` + 12 `clone_pinned` in `ad.sh`** ·
-3 pinned artifacts in `windows.ps1` + 6 choco packages.
+1 pinned artifact in `windows.ps1` + 5 choco packages · 1 pinned + 5 choco in `windows-mobile.ps1`.
 
 ## Expected noise in the build log — not defects
 

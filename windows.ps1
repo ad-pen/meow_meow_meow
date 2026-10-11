@@ -1,26 +1,30 @@
 # windows.ps1 - PSUT VAPT Team, Windows box setup for CPTC engagements.
 #
 # WHAT THIS BOX IS FOR. Read this before adding anything.
-# We do not run active testing from Windows. Its two jobs are:
-#   1. BloodHound graph viewing - fully local, generates no traffic to the client.
-#   2. Occasional dynamic mobile work (Burp as the intercepting proxy).
+# We do not run active testing from Windows. Its jobs are:
+#   1. Burp as the intercepting proxy for dynamic mobile work.
+#   2. Share-content hunting with Snaffler.
 # Everything offensive runs from Kali. The Windows PAYLOADS (mimikatz, Rubeus,
 # PowerView, the potatoes) are NOT installed here - they live in
 # ~/dropzone/windows on Kali and get served to compromised targets over HTTP/SMB.
 # all.sh builds that set. Do not duplicate it onto this box.
 #
-# BLOODHOUND IS INTENTIONALLY THE LEGACY 4.3.1 EDITION, NOT CE.
-# BloodHound CE is a Docker Compose stack, and its only documented Windows install
-# path is Docker Desktop - which is unsupported on every edition of Windows Server.
-# The CPTC VDI ships Windows Server, so CE cannot run here at all. Legacy 4.3.1 is
-# therefore the only option for an on-box viewer, and that choice propagates:
-#   this box (legacy 4.3.1)  <-  bloodhound-python / SharpHound 1.x   [LEGACY format]
-#   Kali     (CE 9.x)        <-  bloodhound-ce-python / SharpHound 2.x [CE format]
-# The two formats CANNOT be mixed - a legacy collection fails at ingest into CE and
-# vice versa. all.sh installs both collectors and keeps them in separate directories
-# for exactly this reason. Neo4j is pinned to 4.4.19 because that is the version
-# BloodHound 4.3.1's own release notes name, and because Neo4j 5.x has a severe
-# ingest performance regression with BloodHound (Kali downgraded 5.2 -> 4.4 over it).
+# AD GRAPH VISUALISATION LIVES ON KALI, NOT HERE.  Removed from this script
+# 2026-10-11. BloodHound 4.3.1 + Neo4j 4.4.19 were installed here as a "backup
+# viewer" for Kali's collections. That could never have worked, and the reasoning is
+# kept so nobody re-adds it:
+#   * Kali runs BloodHound CE 9.x, so its collection zips are CE format.
+#   * Legacy 4.3.1 CANNOT ingest a CE zip, CE cannot ingest a legacy one, and no
+#     converter exists. A legacy viewer here would have needed its own SEPARATE
+#     legacy collection taken on the day - a second pass against the client that
+#     nobody owned and nobody would have remembered to run.
+#   * CE cannot be stood up here instead: it is a Docker Compose stack needing
+#     LINUX containers, and Windows Server cannot provide those. bloodhound-cli is
+#     only a wrapper around that same compose stack.
+# THE BACKUP IS THEREFORE NOT A SECOND VIEWER, IT IS THE ZIPS THEMSELVES: keep the
+# collection zips on the officials-provided drive - which KB 10.0 mandates as the
+# only permitted storage for assessment data anyway - and re-ingest on any of the
+# other five Kali boxes if one dies. Same format, no conversion, nothing to install.
 #
 # ============================== NEEDS INTERNET ==============================
 # Chocolatey and every download below reach the public internet. On an isolated
@@ -34,25 +38,22 @@
 #
 # Switches:
 #   -SkipDefender    leave Defender and the firewall alone
-#   -SkipBloodHound  skip Java + Neo4j + BloodHound (mobile-only box)
-#   -Mobile          ALSO install the mobile kit: Android Studio, the Android SDK,
-#                    two emulators, adb, jadx and frida. ~5.9 GB of downloads and
-#                    well over 10 GB on disk once the system images are unpacked.
-#                    MOBILE/AI OWNER ONLY - nobody else should pay for this, which
-#                    is the same reason all.sh gates the same kit behind --mobile.
 #
-# A mobile-only box is  -Mobile -SkipBloodHound ; a BloodHound box is neither.
+# THE ANDROID MOBILE KIT IS A SEPARATE SCRIPT: .\windows-mobile.ps1
+# Android Studio, the Android SDK, two emulators, adb, jadx and frida used to be a
+# -Mobile switch here. It is ~5.9 GB of downloads and well over 10 GB on disk, one
+# operator needs it, and it shared nothing with this script at runtime - so it is
+# its own file. Run this one first: it is what turns Defender off and records the
+# pre-change state.
 
 [CmdletBinding()]
 param(
-    [switch]$SkipDefender,
-    [switch]$SkipBloodHound,
-    [switch]$Mobile
+    [switch]$SkipDefender
 )
 
 $ErrorActionPreference = 'Continue'
 
-# GitHub and the Neo4j CDN refuse the default TLS on an older Server build, which
+# GitHub and dl.google.com refuse the default TLS on an older Server build, which
 # makes every download below fail with an unhelpful "could not create SSL/TLS
 # secure channel". Force 1.2 before touching the network.
 [Net.ServicePointManager]::SecurityProtocol = `
@@ -93,53 +94,21 @@ catch { Write-Warn "Could not start a transcript - continuing without one" }
 # place, with the version we intend and the sha256 we expect. "TBD" means
 # UNVERIFIED - do not guess one, a wrong hash is worse than no hash.
 #
-# All three hashes were computed on 2026-10-09 from a direct download on a Linux
-# box with no antivirus in the path, and each file was validated before it was
-# hashed: byte count equal to the server's Content-Length, both zips pass an
-# integrity test, and Snaffler.exe begins MZ. They were deliberately NOT taken
-# from a pins.lock produced by a Windows run - Get-Pinned could record the hash of
-# a quarantined or truncated file, so harvesting hashes from its own output would
-# bake the bug in permanently.
+# The hash was computed on 2026-10-09 from a direct download on a Linux box with no
+# antivirus in the path, and the file was validated before it was hashed: byte count
+# equal to the server's Content-Length, and Snaffler.exe begins MZ. It was
+# deliberately NOT taken from a pins.lock produced by a Windows run - Get-Pinned
+# could record the hash of a quarantined or truncated file, so harvesting hashes
+# from its own output would bake the bug in permanently.
 #
 # This table DUPLICATES lib.sh's idea rather than sharing it, because PowerShell
 # cannot source a bash file. Keep them conceptually in step; nothing enforces it.
 # Every URL here was confirmed to resolve on 2026-10-05.
 $Pins = @{
-    bloodhound_legacy = @{
-        Url     = 'https://github.com/SpecterOps/BloodHound-Legacy/releases/download/v4.3.1/BloodHound-win32-x64.zip'
-        Version = 'v4.3.1'
-        Sha256  = '5c560a9be9b74ebc5a006a808c82813eeb5c7d7dcff5d1c34be4fb1fba562535'
-        # NOTE: the old repo pointed at BloodHoundAD/BloodHound, which SpecterOps
-        # has since renamed/archived to BloodHound-Legacy. The old URL is dead.
-    }
-    neo4j = @{
-        Url     = 'https://dist.neo4j.org/neo4j-community-4.4.19-windows.zip'
-        Version = '4.4.19'
-        Sha256  = '462126a7ed4578e1d4ca6bbedb8e9ee83c0a11439fbb924eadb54716c8d79f5e'
-        # 4.4.19 is NOT arbitrary: BloodHound 4.3.1's release notes pin it, and
-        # Neo4j 5.x regresses BloodHound ingest badly. Do not "upgrade" this, and
-        # do not install neo4j from Chocolatey - that package tracks 5.x.
-    }
     snaffler = @{
         Url     = 'https://github.com/SnaffCon/Snaffler/releases/download/1.0.244/Snaffler.exe'
         Version = '1.0.244'
         Sha256  = '397b22a956545ba9cd5f03f0f61cb16e4760db21be97f979a5cfc059c2f854ca'
-    }
-    # -Mobile only. This is the standalone Android SDK command-line tools, which
-    # is what gives us sdkmanager and avdmanager. We do NOT rely on the SDK that
-    # ships inside Android Studio: that one is not populated until someone opens
-    # the Studio GUI and clicks through its first-run wizard, so a script that
-    # assumes it exists works on a machine someone has already used by hand and
-    # fails on a fresh one.
-    #
-    # Provenance: Google publishes a SHA-1 and a size for this archive in
-    # repository2-3.xml, not a SHA-256. Both were checked against this download -
-    # size 154957218 exact, SHA-1 57d04f2d75eb8e8fffc5000a987e5de4b5a63e9d exact -
-    # and the SHA-256 below was then computed from those same verified bytes.
-    cmdline_tools = @{
-        Url     = 'https://dl.google.com/android/repository/commandlinetools-win-16111833_latest.zip'
-        Version = '23.0 (build 16111833)'
-        Sha256  = 'e5885e2e59038c0778a85fc19f01de7ce7c567c105553f7617b936b1e0e87b2b'
     }
 }
 
@@ -163,13 +132,12 @@ function Get-Pinned {
     }
 
     # TWO ATTEMPTS, and the partial file is DELETED between them. Both halves
-    # matter. GitHub and the Neo4j CDN are a 108 MB and a 116 MB fetch here, and
-    # on the Kali side a transient mirror fault cost us a package in three of
-    # seven end-to-end runs - there is no reason to think Windows is luckier.
+    # matter. On the Kali side a transient mirror fault cost us a package in three
+    # of seven end-to-end runs - there is no reason to think Windows is luckier.
     # Deleting the partial is what stops the failure becoming permanent: the skip
-    # check above only asks "does a non-empty file exist", so a half-written zip
-    # left behind would be reported "already present (skip)" on every future run
-    # and the operator would never get a complete one.
+    # check above only asks "does a non-empty file exist", so a truncated file left
+    # behind would be reported "already present (skip)" on every future run and the
+    # operator would never get a complete one.
     $ok = $false
     foreach ($attempt in 1..2) {
         if ($attempt -gt 1) { Write-Warn "retrying $Name (attempt $attempt of 2)..." }
@@ -187,9 +155,10 @@ function Get-Pinned {
 
     # THE FILE CAN BE GONE EVEN THOUGH THE DOWNLOAD "SUCCEEDED". Defender
     # quarantines on write, so Invoke-WebRequest returns cleanly and the file is
-    # then removed under us. This was observed on a real run: BloodHound.zip and
-    # Snaffler.exe were both quarantined, this function reported SUCCESS, and the
-    # caller failed later at Expand-Archive with an unrelated-looking .ctor error.
+    # then removed under us. Observed on the 2026-10-09 run: Snaffler.exe and the
+    # BloodHound zip this script used to fetch were BOTH quarantined, this function
+    # reported SUCCESS, and the caller failed later at Expand-Archive with an
+    # unrelated-looking .ctor error.
     # Without this guard the rest of the function compounds it - Get-FileHash on a
     # missing path yields $null, $null.ToLower() errors but does not stop the
     # script ($ErrorActionPreference is Continue), a NULL hash gets written to
@@ -336,20 +305,6 @@ $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' +
 # burp-suite-free-edition is Burp COMMUNITY. Burp Pro is banned by the rules;
 # do not swap this for the pro package.
 $ChocoPkgs = @('openssh','burp-suite-free-edition','git','flameshot','greenshot')
-if ($Mobile) {
-    # jadx and adb are both real Chocolatey packages (jadx 1.5.6, adb 37.0.0).
-    # python3 is here only because frida has no Chocolatey package and has to come
-    # from pip. temurin17 is NOT a duplicate of the temurin11 below - see the JDK
-    # note in the mobile block; the Android tools and Neo4j need different JDKs.
-    $ChocoPkgs += @('jadx','adb','python3','AndroidStudio','temurin17')
-}
-if (-not $SkipBloodHound) {
-    # Neo4j 4.4 runs on Java 11 or 17. Pin 11 - it is what BloodHound 4.3.1 was
-    # tested against, and Chocolatey's 'neo4j-community' is deliberately NOT used
-    # here because it tracks 5.x (see the pin manifest note).
-    $ChocoPkgs += 'temurin11'
-}
-
 if (Get-Command choco -ErrorAction SilentlyContinue) {
     # One package at a time, so a single failure is reported and skipped instead
     # of taking the whole batch with it. Same reasoning as apt_install in lib.sh.
@@ -400,350 +355,6 @@ if ($env:OneDrive -and $desktop.StartsWith($env:OneDrive, 'OrdinalIgnoreCase')) 
     Write-Warn "  Pause OneDrive sync, or re-run with -SkipDefender and place tools by hand."
 }
 Get-Pinned -Name snaffler -Destination (Join-Path $desktop 'Snaffler.exe') | Out-Null
-
-# ---------------------------------------------------------------------------
-# BloodHound 4.3.1 (LEGACY) + Neo4j 4.4.19
-# ---------------------------------------------------------------------------
-if ($SkipBloodHound) {
-    Write-Status "-SkipBloodHound given - skipping Java/Neo4j/BloodHound"
-} else {
-    $Root      = 'C:\BloodHound'
-    $Neo4jRoot = Join-Path $Root 'neo4j'
-    New-Item -ItemType Directory -Force -Path $Root | Out-Null
-
-    # --- Java ---
-    # Neo4j's service wrapper resolves the JVM through JAVA_HOME. temurin11 usually
-    # sets it machine-wide, but not always before a reboot, so find it ourselves.
-    if (-not $env:JAVA_HOME -or -not (Test-Path (Join-Path $env:JAVA_HOME 'bin\java.exe'))) {
-        $jdk = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue |
-               Where-Object { $_.Name -like 'jdk-11*' } |
-               Sort-Object Name -Descending | Select-Object -First 1
-        if ($jdk) {
-            [Environment]::SetEnvironmentVariable('JAVA_HOME', $jdk.FullName, 'Machine')
-            $env:JAVA_HOME = $jdk.FullName
-            Write-Ok "JAVA_HOME set to $($jdk.FullName)"
-        } else {
-            Write-Warn "No JDK 11 found under Eclipse Adoptium - Neo4j will not start."
-            Write-Warn "  Install it: choco install temurin11 -y   then re-run this script."
-        }
-    } else {
-        Write-Ok "JAVA_HOME already set ($env:JAVA_HOME)"
-    }
-
-    # --- Neo4j 4.4.19 ---
-    $neoZip = Join-Path $Root 'neo4j.zip'
-    if (Test-Path (Join-Path $Neo4jRoot 'bin\neo4j.bat')) {
-        Write-Ok "Neo4j already extracted at $Neo4jRoot (skip)"
-    } elseif (Get-Pinned -Name neo4j -Destination $neoZip) {
-        Write-Status "Extracting Neo4j..."
-        try {
-            Expand-Archive -Path $neoZip -DestinationPath $Root -Force -ErrorAction Stop
-            # The archive unpacks to neo4j-community-<ver>; normalise the path so
-            # nothing downstream has to know the version string.
-            $inner = Get-ChildItem $Root -Directory |
-                     Where-Object { $_.Name -like 'neo4j-community-*' } |
-                     Select-Object -First 1
-            if ($inner) {
-                if (Test-Path $Neo4jRoot) { Remove-Item $Neo4jRoot -Recurse -Force }
-                Move-Item $inner.FullName $Neo4jRoot
-                Write-Ok "Neo4j extracted -> $Neo4jRoot"
-            } else {
-                # Not hypothetical: every one of the 201 entries in Neo4j's Windows
-                # zip uses a BACKSLASH separator, which the ZIP spec does not allow
-                # (BloodHound's archive uses forward slashes like everything else).
-                # Windows treats backslash as a separator so Expand-Archive makes
-                # real directories, but if that ever stops being true this lookup
-                # finds nothing - and it used to say nothing, delete the zip, and
-                # let the install-service step fail later for no visible reason.
-                Write-Err "Extracted, but no neo4j-community-* directory appeared under $Root"
-                Write-Err "  Look at what landed there and move it to $Neo4jRoot by hand."
-            }
-            Remove-Item $neoZip -Force -ErrorAction SilentlyContinue
-        } catch {
-            Write-Err "Neo4j extraction failed: $($_.Exception.Message)"
-        }
-    }
-
-    # --- Neo4j password + service ---
-    # set-initial-password only works BEFORE the database first starts, which is
-    # why it runs here and not after Start-Service.
-    $neoAdmin = Join-Path $Neo4jRoot 'bin\neo4j-admin.bat'
-    $neoBat   = Join-Path $Neo4jRoot 'bin\neo4j.bat'
-    $credFile = Join-Path $Root 'neo4j-credentials.txt'
-
-    if ((Test-Path $neoAdmin) -and -not (Test-Path $credFile)) {
-        # Random, not a team-wide default: this database ends up holding the
-        # client's full directory structure.
-        Add-Type -AssemblyName System.Web -ErrorAction SilentlyContinue
-        $pw = try { [System.Web.Security.Membership]::GeneratePassword(20,4) }
-              catch { -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 20 | ForEach-Object {[char]$_}) }
-
-        Write-Status "Setting the Neo4j initial password..."
-        & $neoAdmin set-initial-password $pw 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) {
-            "neo4j`t$pw" | Set-Content $credFile
-            Write-Ok "Neo4j password set and written to $credFile"
-            Write-Warn "BloodHound login -> bolt://localhost:7687   user: neo4j   pass: see $credFile"
-        } else {
-            Write-Warn "set-initial-password failed (exit $LASTEXITCODE) - the DB may already be initialised"
-        }
-    } elseif (Test-Path $credFile) {
-        Write-Ok "Neo4j credentials already recorded at $credFile (skip)"
-    }
-
-    if (Test-Path $neoBat) {
-        if (Get-Service -Name neo4j -ErrorAction SilentlyContinue) {
-            Write-Ok "Neo4j service already installed"
-        } else {
-            Write-Status "Installing the Neo4j Windows service..."
-            & $neoBat install-service 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { Write-Ok "Neo4j service installed" }
-            else { Write-Warn "Neo4j install-service failed (exit $LASTEXITCODE) - check JAVA_HOME" }
-        }
-        try {
-            Start-Service neo4j -ErrorAction Stop
-            Write-Ok "Neo4j service started"
-            # Start-Service returns as soon as the SERVICE is up, but Neo4j takes
-            # another 20-40s to open the bolt port. Without this wait the port check
-            # in the verification pass below fails on a perfectly good install, and
-            # a spurious FAIL is worse than no check - people learn to ignore it.
-            Write-Status "Waiting for the bolt port (7687) to open..."
-            $deadline = (Get-Date).AddSeconds(90)
-            $bolt = $false
-            while ((Get-Date) -lt $deadline) {
-                if (Get-NetTCPConnection -LocalPort 7687 -State Listen -ErrorAction SilentlyContinue) {
-                    Write-Ok "Neo4j is listening on 7687"
-                    $bolt = $true
-                    break
-                }
-                Start-Sleep -Seconds 3
-            }
-            # Say so when the wait runs out. Without this the loop just ends and the
-            # only sign is a bare "bolt port FAILED" in the verification block, with
-            # nothing saying we waited 90s and gave up.
-            if (-not $bolt) {
-                Write-Warn "Bolt port 7687 did not open within 90s - BloodHound will not connect"
-                Write-Warn "  Check the log: $Neo4jRoot\logs\neo4j.log"
-            }
-        } catch {
-            Write-Warn "Could not start Neo4j: $($_.Exception.Message)"
-            Write-Warn "  Try by hand: & '$neoBat' console"
-        }
-    }
-
-    # --- BloodHound 4.3.1 ---
-    $bhZip = Join-Path $Root 'BloodHound.zip'
-    if (Test-Path (Join-Path $Root 'BloodHound-win32-x64\BloodHound.exe')) {
-        Write-Ok "BloodHound 4.3.1 already extracted (skip)"
-    } elseif (Get-Pinned -Name bloodhound_legacy -Destination $bhZip) {
-        Write-Status "Extracting BloodHound 4.3.1..."
-        try {
-            Expand-Archive -Path $bhZip -DestinationPath $Root -Force -ErrorAction Stop
-            Write-Ok "BloodHound extracted -> $Root"
-            Remove-Item $bhZip -Force -ErrorAction SilentlyContinue
-        } catch {
-            Write-Err "BloodHound extraction failed: $($_.Exception.Message)"
-        }
-    }
-
-    $bhExe = Get-ChildItem $Root -Recurse -Filter 'BloodHound.exe' -ErrorAction SilentlyContinue |
-             Select-Object -First 1
-    if ($bhExe) {
-        $lnk = Join-Path $desktop 'BloodHound.lnk'
-        try {
-            $ws = New-Object -ComObject WScript.Shell
-            $sc = $ws.CreateShortcut($lnk)
-            $sc.TargetPath = $bhExe.FullName
-            $sc.WorkingDirectory = $bhExe.DirectoryName
-            $sc.Save()
-            Write-Ok "Desktop shortcut created"
-        } catch { Write-Warn "Could not create the desktop shortcut" }
-    }
-}
-
-# ---------------------------------------------------------------------------
-# MOBILE  (-Mobile only)
-# ---------------------------------------------------------------------------
-# Two emulators, adb, jadx, frida, Android Studio.
-#
-# WHY THE EMULATORS LIVE HERE AND NOT ON KALI. all.sh installs the same analysis
-# kit, but it says outright that its Android Studio is an APK/layout inspector
-# rather than a place to run an app, because the emulator needs nested
-# virtualisation that a Kali guest almost certainly does not get. A Windows host
-# can expose WHPX, so this is the only box in the build where an emulator has a
-# chance of booting. If THIS box is itself a VM, the same ceiling applies - see
-# the acceleration check at the end of this block.
-#
-# WHY API 33 MUST NOT HAVE THE PLAY STORE. Google ships three flavours of each
-# system image: 'default' (AOSP), 'google_apis' (Google APIs, NO Play Store) and
-# 'google_apis_playstore'. Only the first two give you a root shell - on a Play
-# Store image 'adb root' is refused outright, because those images ship the
-# production verified-boot configuration. No root means no frida-server pushed to
-# /data/local/tmp and started, which means no runtime instrumentation, which is
-# the entire reason the emulator is here. 'google_apis' is the right pick over
-# 'default': it keeps Google Play Services, so apps that need them still run,
-# while leaving the image rootable.
-if ($Mobile) {
-    Write-Status "Installing the mobile kit (-Mobile)..."
-
-    $SdkRoot = 'C:\Android'
-    $CmdTools = Join-Path $SdkRoot 'cmdline-tools\latest'
-
-    # --- frida, from pip: there is no Chocolatey package for it --------------
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        Write-Status "Installing frida-tools (pip)..."
-        python -m pip install --upgrade frida-tools 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { Write-Ok "frida-tools installed" }
-        else { Write-Warn "frida-tools FAILED (pip exit $LASTEXITCODE) - retry: python -m pip install frida-tools" }
-    } else {
-        Write-Warn "python is not on PATH - skipping frida-tools."
-        Write-Warn "  Reopen PowerShell and run: python -m pip install frida-tools"
-    }
-
-    # --- Android SDK command-line tools -------------------------------------
-    if (Test-Path (Join-Path $CmdTools 'bin\sdkmanager.bat')) {
-        Write-Ok "Android command-line tools already at $CmdTools (skip)"
-    } else {
-        $ctZip = Join-Path $env:TEMP 'android-cmdline-tools.zip'
-        if (Get-Pinned -Name cmdline_tools -Destination $ctZip) {
-            # The archive unpacks to a bare 'cmdline-tools\' directory, but
-            # sdkmanager insists on living at <sdk>\cmdline-tools\<version>\bin -
-            # run it from anywhere else and it fails with "Could not determine
-            # SDK root". So unpack to a staging dir and move it into place as
-            # 'latest'.
-            try {
-                $stage = Join-Path $env:TEMP 'android-ct-stage'
-                Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-                Expand-Archive -Path $ctZip -DestinationPath $stage -Force -ErrorAction Stop
-                New-Item -ItemType Directory -Force -Path (Split-Path $CmdTools) | Out-Null
-                Move-Item (Join-Path $stage 'cmdline-tools') $CmdTools -Force
-                Remove-Item $stage,$ctZip -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Ok "Android command-line tools -> $CmdTools"
-            } catch {
-                Write-Err "Could not unpack the command-line tools: $($_.Exception.Message)"
-            }
-        }
-    }
-
-    $sdkmanager = Join-Path $CmdTools 'bin\sdkmanager.bat'
-    $avdmanager = Join-Path $CmdTools 'bin\avdmanager.bat'
-
-    if (-not (Test-Path $sdkmanager)) {
-        Write-Err "sdkmanager is not present - skipping the SDK packages and both emulators."
-    } else {
-        [Environment]::SetEnvironmentVariable('ANDROID_SDK_ROOT', $SdkRoot, 'Machine')
-        [Environment]::SetEnvironmentVariable('ANDROID_HOME',     $SdkRoot, 'Machine')
-        $env:ANDROID_SDK_ROOT = $SdkRoot
-        $env:ANDROID_HOME     = $SdkRoot
-
-        # THE JDK CONFLICT, AND WHY JAVA_HOME IS CHANGED ONLY FOR THESE CHILD
-        # PROCESSES. Neo4j 4.4 runs on JDK 11 and its Windows service wrapper
-        # resolves the JVM through the MACHINE-level JAVA_HOME, which the
-        # BloodHound block above sets to JDK 11 on purpose. These command-line
-        # tools are revision 23 and refuse to start on JDK 11 - they need 17+.
-        # Setting the machine JAVA_HOME to 17 here would silently break Neo4j on
-        # the next service start, and BloodHound would stop connecting for a
-        # reason nobody would trace back to the mobile kit. $env:JAVA_HOME is
-        # process-scoped, so pointing it at 17 affects only the children launched
-        # below and is restored immediately afterwards.
-        $savedJavaHome = $env:JAVA_HOME
-        $jdk17 = Get-ChildItem 'C:\Program Files\Eclipse Adoptium' -Directory -ErrorAction SilentlyContinue |
-                 Where-Object { $_.Name -like 'jdk-17*' } |
-                 Sort-Object Name -Descending | Select-Object -First 1
-        if ($jdk17) {
-            $env:JAVA_HOME = $jdk17.FullName
-            Write-Ok "Using $($jdk17.Name) for the Android tools (machine JAVA_HOME left on JDK 11 for Neo4j)"
-        } else {
-            Write-Warn "No JDK 17 found - sdkmanager needs 17 or newer and will probably refuse to run."
-            Write-Warn "  Install it: choco install temurin17 -y   then re-run with -Mobile."
-        }
-
-        # Licences have to be accepted before anything will download, and
-        # sdkmanager --licenses is an interactive y/n prompt per licence. Feeding
-        # it a block of 'y' is the standard non-interactive answer.
-        Write-Status "Accepting Android SDK licences..."
-        $yes = (1..50 | ForEach-Object { 'y' }) -join "`n"
-        $yes | & $sdkmanager --licenses --sdk_root="$SdkRoot" 2>&1 | Out-Null
-
-        # x86_64 on purpose. An arm64 image on an x86 host has to be fully
-        # emulated rather than virtualised and is unusably slow.
-        #
-        # API 37.1 exists ONLY as a 'ps16k' variant - the 16 KB page-size images.
-        # There is no plain 'system-images;android-37.1;google_apis;x86_64'; the
-        # last release with that naming is 37.0. Verified against Google's own
-        # sys-img manifest on 2026-10-09, so do not "tidy" the tag away.
-        $SdkPkgs = @(
-            'platform-tools',
-            'emulator',
-            'system-images;android-37.1;google_apis_ps16k;x86_64',
-            'system-images;android-33;google_apis;x86_64'
-        )
-        Write-Warn "About to download ~4.4 GB of SDK packages (two system images are 2.2 GB and 1.7 GB)."
-        $sdkFailed = @()
-        foreach ($pkg in $SdkPkgs) {
-            Write-Status "sdkmanager: $pkg"
-            & $sdkmanager --sdk_root="$SdkRoot" --install $pkg 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { Write-Ok "$pkg installed" }
-            else { Write-Warn "$pkg FAILED (sdkmanager exit $LASTEXITCODE)"; $sdkFailed += $pkg }
-        }
-        if ($sdkFailed.Count -gt 0) {
-            Write-Warn "SDK packages that failed: $($sdkFailed -join ', ')"
-            Write-Warn "  Retry: & '$sdkmanager' --sdk_root='$SdkRoot' --install '<package>'"
-        }
-
-        # --- the two AVDs ---------------------------------------------------
-        # -d pixel_6 is passed so avdmanager does not stop and ask whether to
-        # build a custom hardware profile; 'no' is piped as a second line of
-        # defence in case the profile name is ever retired upstream.
-        $Avds = @(
-            @{ Name = 'cptc-api371';       Image = 'system-images;android-37.1;google_apis_ps16k;x86_64' },
-            @{ Name = 'cptc-api33-noplay'; Image = 'system-images;android-33;google_apis;x86_64' }
-        )
-        foreach ($avd in $Avds) {
-            if ((& $avdmanager list avd 2>&1 | Out-String) -match [regex]::Escape($avd.Name)) {
-                Write-Ok "AVD $($avd.Name) already exists (skip)"
-                continue
-            }
-            if ($sdkFailed -contains $avd.Image) {
-                Write-Warn "Skipping AVD $($avd.Name) - its system image did not install"
-                continue
-            }
-            Write-Status "Creating AVD $($avd.Name)..."
-            'no' | & $avdmanager create avd -n $avd.Name -k $avd.Image -d pixel_6 --force 2>&1 | Out-Null
-            # CONFIRMED BY RE-LISTING, not by the exit code. If avdmanager cannot be
-            # launched at all, PowerShell throws and $LASTEXITCODE keeps whatever
-            # the PREVIOUS command left in it - frequently 0 - so an exit-code test
-            # reports success for a tool that never ran. That is the same mistake
-            # Get-Pinned used to make with a quarantined file. Asking avdmanager
-            # what AVDs exist is one extra call and cannot be fooled that way.
-            if ((& $avdmanager list avd 2>&1 | Out-String) -match [regex]::Escape($avd.Name)) {
-                Write-Ok "AVD $($avd.Name) created"
-            } else {
-                Write-Warn "AVD $($avd.Name) FAILED - it is not in 'avdmanager list avd'"
-                Write-Warn "  Retry by hand: & '$avdmanager' create avd -n $($avd.Name) -k '$($avd.Image)' -d pixel_6"
-            }
-        }
-
-        $env:JAVA_HOME = $savedJavaHome   # hand JDK 11 back to Neo4j
-
-        # --- can an emulator actually run here? ------------------------------
-        # Worth answering now rather than on engagement morning. The emulator
-        # needs a hypervisor; if this box is itself a VM without nested
-        # virtualisation it will install perfectly and then refuse to boot.
-        $hv = $false
-        try { $hv = [bool](Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).HypervisorPresent } catch { }
-        if (-not $hv) {
-            Write-Warn "No hypervisor detected - the emulators may not boot on this box."
-            Write-Warn "  Enable Windows Hypervisor Platform, or run the emulators on real hardware."
-            Write-Warn "  jadx/adb/frida do not need it; only the emulators do."
-        } else {
-            Write-Ok "Hypervisor present - hardware acceleration should be available"
-        }
-    }
-} else {
-    Write-Status "Skipping the mobile kit - run with -Mobile for Android Studio, two"
-    Write-Status "  emulators (API 37.1 and API 33 without Play Store), adb, jadx and frida."
-}
 
 # ---------------------------------------------------------------------------
 # PuTTY scrollback
@@ -799,50 +410,6 @@ Test-Item "Burp Community" {
 }
 Test-Item "Snaffler.exe (valid PE)" { Test-PE (Join-Path $desktop 'Snaffler.exe') }
 
-if (-not $SkipBloodHound) {
-    Test-Item "JDK 11 (java runs)" {
-        (& "$env:JAVA_HOME\bin\java.exe" -version 2>&1) -match 'version'
-    }
-    Test-Item "Neo4j extracted"      { Test-Path 'C:\BloodHound\neo4j\bin\neo4j.bat' }
-    Test-Item "Neo4j service exists" { [bool](Get-Service neo4j -ErrorAction SilentlyContinue) }
-    Test-Item "Neo4j service running" {
-        (Get-Service neo4j -ErrorAction SilentlyContinue).Status -eq 'Running'
-    }
-    Test-Item "Neo4j bolt port 7687 listening" {
-        [bool](Get-NetTCPConnection -LocalPort 7687 -State Listen -ErrorAction SilentlyContinue)
-    }
-    Test-Item "Neo4j credentials recorded" { Test-Path 'C:\BloodHound\neo4j-credentials.txt' }
-    Test-Item "BloodHound.exe (valid PE)" {
-        $e = Get-ChildItem 'C:\BloodHound' -Recurse -Filter 'BloodHound.exe' -ErrorAction SilentlyContinue |
-             Select-Object -First 1
-        $e -and (Test-PE $e.FullName)
-    }
-}
-
-if ($Mobile) {
-    # Each of these RUNS the tool rather than locating it - a jadx.bat that cannot
-    # find a JVM is on PATH and still useless.
-    Test-Item "jadx"  { (& jadx --version 2>&1 | Out-String) -match '[0-9]+\.[0-9]' }
-    Test-Item "adb"   { (& adb version    2>&1 | Out-String) -match 'Android Debug Bridge' }
-    Test-Item "frida" { (& frida --version 2>&1 | Out-String) -match '[0-9]+\.[0-9]' }
-    Test-Item "Android Studio installed" {
-        [bool](Get-ChildItem 'C:\Program Files\Android\Android Studio\bin\studio*.exe' -ErrorAction SilentlyContinue)
-    }
-    Test-Item "sdkmanager" { Test-Path 'C:\Android\cmdline-tools\latest\bin\sdkmanager.bat' }
-    Test-Item "emulator"   { Test-Path 'C:\Android\emulator\emulator.exe' }
-    # The images are checked separately from the AVDs: a missing image is WHY an
-    # AVD would be absent, and conflating the two hides which half broke.
-    Test-Item "system image API 37.1 (no Play Store)" {
-        Test-Path 'C:\Android\system-images\android-37.1\google_apis_ps16k\x86_64'
-    }
-    Test-Item "system image API 33 (no Play Store)" {
-        Test-Path 'C:\Android\system-images\android-33\google_apis\x86_64'
-    }
-    $avdList = try { & 'C:\Android\cmdline-tools\latest\bin\avdmanager.bat' list avd 2>&1 | Out-String } catch { '' }
-    Test-Item "AVD cptc-api371"       { $avdList -match 'cptc-api371' }
-    Test-Item "AVD cptc-api33-noplay" { $avdList -match 'cptc-api33-noplay' }
-}
-
 Write-Host ""
 Write-Host "=======================================" -ForegroundColor Green
 Write-Host "Verification Summary"                    -ForegroundColor Green
@@ -858,40 +425,21 @@ Write-Host ""
 Write-Host "+-------------------------------------------------------+" -ForegroundColor Yellow
 Write-Host "|   NEXT STEPS                                          |" -ForegroundColor Yellow
 Write-Host "+-------------------------------------------------------+" -ForegroundColor Yellow
-Write-Warn "1. Reopen PowerShell so the machine PATH and JAVA_HOME are picked up."
-if (-not $SkipBloodHound) {
-    Write-Warn "2. Launch BloodHound from the Desktop shortcut."
-    Write-Warn "   Login: bolt://localhost:7687  user neo4j  pass in C:\BloodHound\neo4j-credentials.txt"
-    Write-Warn "3. FEED IT LEGACY COLLECTIONS ONLY:"
-    Write-Warn '     kali$   bloodhound-python ...                  (apt bloodhound.py)'
-    Write-Warn '     target> SharpHound.exe   from ~/dropzone/windows/legacy/'
-    Write-Warn "   A CE collection (bloodhound-ce-python, SharpHound 2.x, azurehound)"
-    Write-Warn "   WILL FAIL TO INGEST here. Those go to BloodHound CE on Kali."
-}
-if ($Mobile) {
-    Write-Warn "3b. MOBILE KIT - open a fresh shell first, for ANDROID_SDK_ROOT."
-    Write-Warn "    List them:  avdmanager list avd"
-    Write-Warn "    Boot one:   C:\Android\emulator\emulator.exe -avd cptc-api33-noplay"
-    Write-Warn "    cptc-api33-noplay is the ROOTABLE one - API 33, Google APIs, NO Play"
-    Write-Warn "    Store - so it is the box frida runs against:"
-    Write-Warn "        adb root"
-    Write-Warn "        adb push frida-server /data/local/tmp/"
-    Write-Warn "        adb shell chmod 755 /data/local/tmp/frida-server"
-    Write-Warn "        frida-ps -U      # proves the host can see the device"
-    Write-Warn "    frida-server is deliberately NOT bundled: its version has to match the"
-    Write-Warn "    frida-tools pip just installed, so grab the matching android-x86_64"
-    Write-Warn "    build from github.com/frida/frida/releases WHILE YOU STILL HAVE EGRESS."
-    Write-Warn "    cptc-api371 (API 37.1) is the current-Android target."
-    Write-Warn "    Static work needs NO emulator: jadx/apktool -> grep -> hand the endpoint"
-    Write-Warn "    list to the web team. Per the KB that 90-minute path is the one worth"
-    Write-Warn "    betting on; the emulators are the hedge."
-}
-Write-Warn "4. Offensive payloads are NOT on this box by design - they live in"
-Write-Warn "   ~/dropzone/windows on Kali and are served from there. See all.sh."
+Write-Warn "- Reopen PowerShell so the machine PATH is picked up."
+Write-Warn "- AD GRAPH VISUALISATION IS ON KALI, not on this box. BloodHound CE 9.x"
+Write-Warn "  owns it. The backup is the collection ZIPS, not a second viewer: keep them"
+Write-Warn "  on the officials-provided drive - KB 10.0 makes that the only permitted"
+Write-Warn "  storage for assessment data anyway - and re-ingest on any of the other"
+Write-Warn "  five Kali boxes if one dies. A legacy BloodHound here could not have read"
+Write-Warn "  a CE zip at all, which is why it is no longer installed. See the header."
+Write-Warn "- Offensive payloads are NOT on this box by design - they live in"
+Write-Warn "  ~/dropzone/windows on Kali and are served from there. See all.sh."
+Write-Warn "- The Android mobile kit is a SEPARATE script: .\windows-mobile.ps1"
+Write-Warn "  Mobile/AI owner only - ~5.9 GB down, 10 GB+ on disk. Run it after this."
 if (-not $SkipDefender) {
-    Write-Warn "5. Defender RTM and the firewall are OFF. Pre-change state is in"
-    Write-Warn "   $env:USERPROFILE\pre-change-security-state.txt - log this on the"
-    Write-Warn "   Artifact & Configuration Changes sheet."
+    Write-Warn "- Defender RTM and the firewall are OFF. Pre-change state is in"
+    Write-Warn "  $env:USERPROFILE\pre-change-security-state.txt - log this on the"
+    Write-Warn "  Artifact & Configuration Changes sheet."
 }
 Write-Host ""
 Write-Ok "Setup log: $Transcript"

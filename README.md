@@ -84,14 +84,19 @@ box otherwise has none of. It is self-contained on purpose — no sourcing of
 
 ```powershell
 powershell -ep bypass
-.\windows.ps1                  # -SkipDefender / -SkipBloodHound
-.\windows.ps1 -Mobile          # MOBILE/AI OWNER ONLY - adds ~5.9 GB
+.\windows.ps1                  # everyone      - Burp Community, Snaffler, PuTTY
+.\windows-mobile.ps1           # MOBILE OWNER  - ~5.9 GB down, 10 GB+ on disk
 ```
 
-`-Mobile` adds Android Studio, the Android SDK, **two emulators** (API 37.1, and
-API 33 **without** the Play Store so it can be rooted for frida), `adb`, `jadx`
-and `frida-tools`. Same deal as `all.sh --mobile`: nobody else should pay for it.
-A mobile-only box is `-Mobile -SkipBloodHound`.
+**Run `windows.ps1` first.** It is what disables Defender and the firewall and
+records the pre-change state; `windows-mobile.ps1` only *reports* Defender's state
+and will warn you if real-time monitoring is still on.
+
+`windows-mobile.ps1` is Android Studio, the Android SDK, **two emulators** (API
+37.1, and API 33 **without** the Play Store so it can be rooted for frida), `adb`,
+`jadx` and `frida-tools`. Same deal as `all.sh --mobile`: nobody else should pay
+for it. It was a `-Mobile` switch until 2026-10-11; it shares nothing with the base
+script at runtime, so it is its own file.
 
 ⚠️ **Needs internet. Run it during prep, not on engagement morning.**
 
@@ -107,7 +112,8 @@ A mobile-only box is `-Mobile -SkipBloodHound`.
 | `smol-all.sh` | Emergency rebuild — critical path only |
 | `lib.sh` | Shared helpers, the `$USER_HOME` resolver, the Burp installer, the **verification helpers** and the **artifact pin manifest** |
 | `pins.sh` | Record / verify the pinned sha256 values |
-| `windows.ps1` | Windows box: Burp, Snaffler, BloodHound 4.3.1 + Neo4j 4.4. `-Mobile` adds the emulators |
+| `windows.ps1` | Windows box: Burp Community, Snaffler, PuTTY scrollback |
+| `windows-mobile.ps1` | Windows box, **mobile owner only**: Android Studio, SDK, two emulators, adb, jadx, frida |
 | `command_logging.sh` | Timestamped, credential-redacted shell log (zsh + bash) |
 | `burp_logging.sh`, `burp_logger.py` | Burp extension logging HTTP traffic to a readable file (run by `all.sh`, after Burp) |
 | `terminal_uniform.sh` | Identical terminal appearance across the team, for screenshots |
@@ -222,30 +228,32 @@ as unpinned. That is upstream's constraint, not an oversight.
 
 ---
 
-## ⚠️ Two BloodHound stacks — do not mix collections
-
-The build runs **both** BloodHound generations, because neither alone covers the
-need. Mixing their collections **fails at ingest** rather than degrading
-gracefully, so the collectors are installed into separate directories.
+## BloodHound runs on Kali only
 
 | Viewer | Where | Fed by |
 |---|---|---|
 | **BloodHound CE 9.4.0** | Kali — `sudo bloodhound-start` | `bloodhound-ce-python`, `~/dropzone/windows/ce/SharpHound.exe` (2.x), `azurehound` |
-| **BloodHound 4.3.1 (legacy)** | Windows box — `windows.ps1` | `bloodhound-python`, `~/dropzone/windows/legacy/SharpHound.exe` (1.x) |
 
-Why both:
+**The Windows legacy stack was removed on 2026-10-11.** BloodHound 4.3.1 + Neo4j
+4.4.19 were on the Windows box as a "backup viewer" for Kali's collections, and it
+could not have served that purpose:
 
-- **CE cannot run on the Windows box.** CE is a Docker Compose stack whose only
-  documented Windows install path is Docker Desktop, and Docker Desktop is
-  unsupported on every edition of Windows Server. So an on-box viewer has to be
-  legacy.
-- **CE cannot be dropped from Kali.** AzureHound v3 emits CE format only, and
-  having cloud and on-prem paths in one graph is the whole reason AzureHound is
-  installed. Legacy 4.3.1 cannot ingest it.
+- **Legacy cannot read a CE zip**, CE cannot read a legacy one, and **no converter
+  exists**. The Windows viewer would have needed its own separate legacy collection
+  taken on the day — a second pass against the client that nobody owned.
+- **CE cannot be stood up on Windows instead.** It is a Docker Compose stack
+  needing *Linux* containers, which Windows Server cannot provide; `bloodhound-cli`
+  is only a wrapper around that same compose stack.
 
-Neo4j on Windows is pinned to **4.4.19** — the version BloodHound 4.3.1's own
-release notes name. Neo4j 5.x has a severe BloodHound ingest performance
-regression. Do not install Neo4j from Chocolatey; that package tracks 5.x.
+**The backup is the collection zips, not a second viewer.** Keep them on the
+officials-provided drive — KB §10.0 makes that the only permitted storage for
+assessment data anyway — and re-ingest on any of the other five Kali boxes if one
+dies. Same format, no conversion, nothing to install.
+
+⚠️ **Loose end:** the *legacy collectors* are still built on Kali
+(`bloodhound-python`, `~/dropzone/windows/legacy/SharpHound.exe` 1.x) and now have
+no viewer anywhere. Either drop them or re-add a legacy viewer; right now they
+produce zips nothing in the build can open.
 
 ---
 
